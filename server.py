@@ -151,7 +151,9 @@ def resolve_with_ytdlp(clean_url: str) -> Optional[Dict[str, Any]]:
                 },
                 "engine": "yt-dlp-native"
             }
-    except Exception:
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
         return None
 
 def resolve_with_tikwm(clean_url: str) -> Optional[Dict[str, Any]]:
@@ -287,7 +289,9 @@ def resolve_with_tikwm(clean_url: str) -> Optional[Dict[str, Any]]:
                 },
                 "engine": "tikwm-proxy"
             }
-    except Exception:
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
         return None
 
 def resolve_with_ssstik(clean_url: str) -> Optional[Dict[str, Any]]:
@@ -326,6 +330,10 @@ def resolve_with_ssstik(clean_url: str) -> Optional[Dict[str, Any]]:
             prev_m = re.search(r"ssrPreview\(['\"](https?://tikcdn\.io/ssstik/v/[^'\"]+)['\"]\)", html)
             a_m = re.search(r"href=[\"'](https?://tikcdn\.io/ssstik/m/[^\"']+)[\"']", html)
 
+            video_url = v_m.group(1) if v_m else ""
+            preview_url = prev_m.group(1) if prev_m else video_url
+            audio_url = a_m.group(1) if a_m else ""
+
             images = re.findall(r"data-splide-lazy=[\"'](https?://[^\"']+)[\"']", html)
 
             # Extraer carrusel de fotos completo desde slides_data si está presente
@@ -339,11 +347,20 @@ def resolve_with_ssstik(clean_url: str) -> Optional[Dict[str, Any]]:
                         if k.isdigit() and isinstance(slides_dict[k], dict):
                             slide_img = slides_dict[k].get("url")
                             if slide_img:
-                                extracted_imgs.append(slide_img)
+                                if not slide_img.startswith("https://tikcdn.io/"):
+                                    b64_img = base64.b64encode(slide_img.encode('utf-8')).decode('utf-8')
+                                    extracted_imgs.append(f"https://tikcdn.io/ssstik/{b64_img}")
+                                else:
+                                    extracted_imgs.append(slide_img)
                     if extracted_imgs:
                         images = extracted_imgs
                     if not audio_url and slides_dict.get("music"):
-                        audio_url = slides_dict.get("music")
+                        raw_music = slides_dict.get("music")
+                        if raw_music and not raw_music.startswith("https://tikcdn.io/"):
+                            b64_music = base64.b64encode(raw_music.encode('utf-8')).decode('utf-8')
+                            audio_url = f"https://tikcdn.io/ssstik/m/{b64_music}"
+                        else:
+                            audio_url = raw_music
                 except Exception:
                     pass
 
@@ -397,7 +414,7 @@ def resolve_with_ssstik(clean_url: str) -> Optional[Dict[str, Any]]:
                 "id": str(int(time.time())),
                 "source_url": clean_url,
                 "title": desc,
-                "preview_url": video_url if not is_photos else "",
+                "preview_url": (preview_url or video_url) if not is_photos else "",
                 "video_url": video_url if not is_photos else "",
                 "hd_url": video_url if not is_photos else "",
                 "uhd_4k_url": video_url if not is_photos else "",
@@ -421,7 +438,9 @@ def resolve_with_ssstik(clean_url: str) -> Optional[Dict[str, Any]]:
                 },
                 "engine": "ssstik-proxy"
             }
-    except Exception:
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
         return None
 
 @app.get("/")
