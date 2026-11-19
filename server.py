@@ -453,15 +453,15 @@ async def extract_media(req: ExtractRequest):
             detail="Enlace inválido. Por favor proporciona una URL válida de tiktok.com"
         )
 
-    # Si es enlace corto (vt.tiktok.com o vm.tiktok.com), resolver redirección hacia la URL canónica
+    # Si es enlace corto (vt.tiktok.com o vm.tiktok.com), intentar resolver hacia la URL canónica del vídeo
     if "vt.tiktok.com" in clean_url or "vm.tiktok.com" in clean_url or "/t/" in clean_url:
         try:
             async with httpx.AsyncClient(follow_redirects=True, timeout=5.0) as client:
-                resp = await client.head(clean_url, headers={"User-Agent": UA_DESKTOP})
+                resp = await client.get(clean_url, headers={"User-Agent": UA_DESKTOP})
                 target = str(resp.url)
                 if "?" in target:
                     target = target[:target.find("?")]
-                if "tiktok.com" in target and target != clean_url:
+                if ("/video/" in target or "/photo/" in target) and target != clean_url:
                     clean_url = target
         except Exception:
             pass
