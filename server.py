@@ -472,10 +472,10 @@ async def extract_media(req: ExtractRequest):
     if cached and (now - cached["timestamp"] < CACHE_EXPIRY_SECONDS):
         return {"success": True, "cached": True, "data": cached["data"]}
 
-    # Cascada de motores: TikWM -> SSSTik -> yt-dlp
-    result = resolve_with_tikwm(clean_url)
+    # Cascada de motores: SSSTik (CDN sin bloqueo tikcdn.io) -> TikWM -> yt-dlp
+    result = resolve_with_ssstik(clean_url)
     if not result:
-        result = resolve_with_ssstik(clean_url)
+        result = resolve_with_tikwm(clean_url)
     if not result:
         result = resolve_with_ytdlp(clean_url)
 
