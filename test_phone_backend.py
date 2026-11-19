@@ -8,7 +8,7 @@ with open(r"C:\Users\Administrator\.gemini\antigravity\scratch\snaptik-backend\t
 cmd = (
     'adb connect 192.168.101.74:5555 && '
     'adb push "C:\\Users\\Administrator\\.gemini\\antigravity\\scratch\\snaptik-backend\\test_req.json" /data/local/tmp/test_req.json && '
-    'adb shell "curl -s -X POST http://192.168.101.84:8000/api/extract -H \'Content-Type: application/json\' -d @/data/local/tmp/test_req.json" && '
+    'adb shell "curl -s -X POST https://snaptik-backend.onrender.com/api/extract -H \'Content-Type: application/json\' -d @/data/local/tmp/test_req.json" && '
     'adb shell "rm /data/local/tmp/test_req.json"'
 )
 
