@@ -306,6 +306,9 @@ def resolve_with_ssstik(clean_url: str) -> Optional[Dict[str, Any]]:
             desc_m = re.search(r"<p[^>]*class=[\"'][^\"']*(?:ssr-caption|maintext)[^\"']*[\"'][^>]*>(.*?)</p>", html, re.DOTALL)
             desc = re.sub(r"<[^>]+>", "", desc_m.group(1)).strip() if desc_m else f"Vídeo de {nickname}"
 
+            ava_m = re.search(r'<img[^>]*class=[\'"][^\'"]*ssr-ava[^\'"]*[\'"][^>]*src=[\'"]([^\'"]+)[\'"]', html)
+            avatar_url = ava_m.group(1) if ava_m else ""
+
             is_photos = len(images) > 0
             return {
                 "id": str(int(time.time())),
@@ -319,7 +322,7 @@ def resolve_with_ssstik(clean_url: str) -> Optional[Dict[str, Any]]:
                 "wm_url": "",
                 "audio_url": audio_url,
                 "music_title": f"Música de {nickname}",
-                "cover_url": images[0] if is_photos else "",
+                "cover_url": avatar_url or (images[0] if is_photos else ""),
                 "size_mb": "",
                 "hd_size_mb": "",
                 "duration": 0,
@@ -331,7 +334,7 @@ def resolve_with_ssstik(clean_url: str) -> Optional[Dict[str, Any]]:
                 "author": {
                     "nickname": nickname,
                     "unique_id": nickname.lower().replace(" ", "_"),
-                    "avatar": ""
+                    "avatar": avatar_url
                 },
                 "engine": "ssstik-proxy"
             }
