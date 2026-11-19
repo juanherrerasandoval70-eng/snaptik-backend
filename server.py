@@ -214,6 +214,13 @@ def resolve_with_tikwm(clean_url: str) -> Optional[Dict[str, Any]]:
             if not audio_url and images and play_url:
                 audio_url = play_url
 
+            # Si es un carrusel de fotos y play_url es en realidad un stream de audio mpeg
+            if images and ("audio_mpeg" in play_url or "mime_type=audio" in play_url):
+                if not audio_url:
+                    audio_url = play_url
+                play_url = ""
+                hd_play_url = ""
+
             author_obj = d.get('author') or {}
             nickname = author_obj.get('nickname') or 'Creador de TikTok'
             unique_id = author_obj.get('unique_id') or 'tiktok_user'
@@ -321,8 +328,57 @@ def resolve_with_ssstik(clean_url: str) -> Optional[Dict[str, Any]]:
 
             images = re.findall(r"data-splide-lazy=[\"'](https?://[^\"']+)[\"']", html)
 
-            video_url = v_m.group(1) if v_m else (prev_m.group(1) if prev_m else "")
-            audio_url = a_m.group(1) if a_m else ""
+            # Extraer carrusel de fotos completo desde slides_data si está presente
+            m_slides = re.search(r'name=["\']?slides_data["\']?[^>]*value=["\'](.*?)["\']', html)
+            if m_slides:
+                try:
+                    raw_b64 = m_slides.group(1)
+                    slides_dict = json.loads(base64.b64decode(raw_b64).decode('utf-8'))
+                    extracted_imgs = []
+                    for k in sorted(slides_dict.keys(), key=lambda x: int(x) if x.isdigit() else 9999):
+                        if k.isdigit() and isinstance(slides_dict[k], dict):
+                            slide_img = slides_dict[k].get("url")
+                            if slide_img:
+                                extracted_imgs.append(slide_img)
+                    if extracted_imgs:
+                        images = extracted_imgs
+                    if not audio_url and slides_dict.get("music"):
+                        audio_url = slides_dict.get("music")
+                except Exception:
+                    pass
+
+            # También buscar enlaces directos de descarga de diapositivas
+            slide_anchors = re.findall(r'<a\s+[^>]*href=["\']([^"\']+)["\'][^>]*class=["\'][^"\']*slide[^"\']*["\']', html)
+            for sa in slide_anchors:
+                if sa not in images:
+                    images.append(sa)
+
+            # Verificar si video_url es en realidad una imagen de diapositiva o photomode
+            is_video_actually_image = False
+            if video_url:
+                lower_v = video_url.lower()
+                if "photomode" in lower_v or lower_v.endswith(".webp") or lower_v.endswith(".jpg") or lower_v.endswith(".png") or lower_v.endswith(".jpeg"):
+                    is_video_actually_image = True
+                elif "/ssstik/ahr0" in lower_v or "/ssstik/a/" in lower_v:
+                    try:
+                        b64_part = video_url.split("/ssstik/")[-1].split("?")[0]
+                        if b64_part.startswith("a/"):
+                            b64_part = b64_part[2:]
+                        pad = len(b64_part) % 4
+                        if pad:
+                            b64_part += "=" * (4 - pad)
+                        dec = base64.b64decode(b64_part).decode('utf-8', errors='ignore').lower()
+                        if "photomode" in dec or ".webp" in dec or ".jpg" in dec or ".png" in dec or ".jpeg" in dec:
+                            is_video_actually_image = True
+                    except Exception:
+                        pass
+
+            if is_video_actually_image:
+                if not images:
+                    images.append(video_url)
+                video_url = ""
+
+            video_url = video_url if not is_video_actually_image else ""
 
             if not video_url and not images:
                 return None
