@@ -1,3 +1,4 @@
+import asyncio
 import os
 import re
 import time
@@ -14,7 +15,7 @@ import yt_dlp
 app = FastAPI(
     title="SnapTik PRO - Motor Privado de Extracción",
     description="Backend API independiente para procesar y descargar vídeos y carruseles de TikTok en máxima calidad.",
-    version="1.0.0"
+    version="1.1.0"
 )
 
 app.add_middleware(
@@ -27,10 +28,36 @@ app.add_middleware(
 
 UA_DESKTOP = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
 PROXY_URL = os.environ.get("PROXY_URL", "").strip() or None
+RENDER_EXTERNAL_URL = os.environ.get("RENDER_EXTERNAL_URL", "https://snaptik-backend.onrender.com").strip()
 
 # Memoria Caché en RAM con expiración de 1 hora
 CACHE_EXPIRY_SECONDS = 3600
 cache_store: Dict[str, Dict[str, Any]] = {}
+
+# Pool de conexiones optimizado de alta velocidad
+http_limits = httpx.Limits(max_keepalive_connections=50, max_connections=200)
+
+async def background_auto_maintenance():
+    """Mantenimiento automático y Keep-Alive 24/7: Evita que Render duerma y purga RAM periódicamente."""
+    while True:
+        try:
+            await asyncio.sleep(600)  # Cada 10 minutos
+            # Auto-ping externo para mantener activo el servidor
+            if RENDER_EXTERNAL_URL:
+                async with httpx.AsyncClient(timeout=15.0) as client:
+                    await client.get(f"{RENDER_EXTERNAL_URL}/api/health")
+
+            # Mantenimiento de memoria: limpiar entradas expiradas
+            now = time.time()
+            expired_keys = [k for k, v in list(cache_store.items()) if (now - v["timestamp"] > CACHE_EXPIRY_SECONDS)]
+            for k in expired_keys:
+                cache_store.pop(k, None)
+        except Exception:
+            pass
+
+@app.on_event("startup")
+async def on_startup():
+    asyncio.create_task(background_auto_maintenance())
 
 class ExtractRequest(BaseModel):
     url: str
@@ -408,7 +435,7 @@ async def proxy_download(url: str = Query(...), filename: str = Query("download.
         "Referer": "https://www.tiktok.com/"
     }
 
-    client = httpx.AsyncClient(timeout=60.0)
+    client = httpx.AsyncClient(timeout=60.0, limits=http_limits)
     req = client.build_request("GET", url, headers=headers)
     resp = await client.send(req, stream=True)
 
@@ -421,7 +448,8 @@ async def proxy_download(url: str = Query(...), filename: str = Query("download.
 
     async def stream_generator():
         try:
-            async for chunk in resp.aiter_bytes(chunk_size=65536):
+            # Buffer de 256KB para máxima velocidad de descarga y menor uso de CPU
+            async for chunk in resp.aiter_bytes(chunk_size=262144):
                 yield chunk
         finally:
             await resp.aclose()
