@@ -389,13 +389,26 @@ def health():
     }
 
 @app.post("/api/extract")
-def extract_media(req: ExtractRequest):
+async def extract_media(req: ExtractRequest):
     clean_url = clean_tiktok_url(req.url)
     if not clean_url:
         raise HTTPException(
             status_code=400,
             detail="Enlace inválido. Por favor proporciona una URL válida de tiktok.com"
         )
+
+    # Si es enlace corto (vt.tiktok.com o vm.tiktok.com), resolver redirección hacia la URL canónica
+    if "vt.tiktok.com" in clean_url or "vm.tiktok.com" in clean_url or "/t/" in clean_url:
+        try:
+            async with httpx.AsyncClient(follow_redirects=True, timeout=5.0) as client:
+                resp = await client.head(clean_url, headers={"User-Agent": UA_DESKTOP})
+                target = str(resp.url)
+                if "?" in target:
+                    target = target[:target.find("?")]
+                if "tiktok.com" in target and target != clean_url:
+                    clean_url = target
+        except Exception:
+            pass
 
     # Revisar memoria caché
     now = time.time()
@@ -411,8 +424,12 @@ def extract_media(req: ExtractRequest):
         result = resolve_with_ytdlp(clean_url)
 
     if result:
-        # Guardar en caché
+        # Guardar en caché tanto la URL canónica como el id del video
         cache_store[clean_url] = {"timestamp": now, "data": result}
+        vid_id = result.get("id")
+        if vid_id and len(vid_id) > 5:
+            cache_store[f"id:{vid_id}"] = {"timestamp": now, "data": result}
+
         # Limitar caché a 1000 elementos
         if len(cache_store) > 1000:
             oldest_key = min(cache_store.keys(), key=lambda k: cache_store[k]["timestamp"])
