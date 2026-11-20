@@ -457,11 +457,11 @@ def home():
 @app.get("/api/version")
 def get_version_info():
     return {
-        "versionCode": 3,
-        "versionName": "2.1.0",
+        "versionCode": 4,
+        "versionName": "2.2.0",
         "backendUrl": "https://snaptik-backend.onrender.com/api/extract",
         "apkUrl": "https://raw.githubusercontent.com/juanherrerasandoval70-eng/snaptik-app/main/dist/SnapTik_PRO_v1.0.apk",
-        "changelog": "• Motor FastMediaDownloader con aceleración de 128 KB en streaming directo\n• Calidades 1080p Full HD y 720p Estándar diferenciadas y verificadas\n• Conexión directa a nuestro propio backend privado 24/7\n• Cero esperas de descarga y guardado instantáneo en galería",
+        "changelog": "• Nueva Tarjeta de Descarga flotante Bento con miniatura, barra de progreso y acciones inmediatas\n• Reproducción directa y apertura de archivos descargados con un solo toque\n• Notificaciones del sistema nativas de Android al completar descargas\n• Motor FastMediaDownloader con aceleración de 128 KB",
         "forceUpdate": False
     }
 
