@@ -462,7 +462,7 @@ def get_version_info():
         "backendUrl": "https://snaptik-backend.onrender.com/api/extract",
         "apkUrl": "https://raw.githubusercontent.com/juanherrerasandoval70-eng/snaptik-app/main/dist/SnapTik_PRO_v1.0.apk",
         "changelog": "• Motor FastMediaDownloader con aceleración de 128 KB en streaming directo\n• Calidades 1080p Full HD y 720p Estándar diferenciadas y verificadas\n• Conexión directa a nuestro propio backend privado 24/7\n• Cero esperas de descarga y guardado instantáneo en galería",
-        "forceUpdate": false
+        "forceUpdate": False
     }
 
 @app.get("/api/health")
