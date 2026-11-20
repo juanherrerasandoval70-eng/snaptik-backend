@@ -491,11 +491,25 @@ async def extract_media(req: ExtractRequest):
     if cached and (now - cached["timestamp"] < CACHE_EXPIRY_SECONDS):
         return {"success": True, "cached": True, "data": cached["data"]}
 
-    # Cascada de motores: SSSTik (CDN sin bloqueo tikcdn.io) -> TikWM -> yt-dlp
-    result = resolve_with_ssstik(clean_url)
-    if not result:
-        result = resolve_with_tikwm(clean_url)
-    if not result:
+    # Fusión inteligente de motores para calidades reales diferenciadas (TikWM + SSSTik + yt-dlp)
+    twm_res = resolve_with_tikwm(clean_url)
+    sss_res = resolve_with_ssstik(clean_url)
+
+    result = None
+    if twm_res and sss_res:
+        merged = dict(twm_res)
+        if sss_res.get("images") and len(sss_res["images"]) > len(twm_res.get("images") or []):
+            merged["images"] = sss_res["images"]
+        if sss_res.get("preview_url"):
+            merged["preview_url"] = sss_res["preview_url"]
+        if not merged.get("video_url") and sss_res.get("video_url"):
+            merged["video_url"] = sss_res["video_url"]
+        result = merged
+    elif twm_res:
+        result = twm_res
+    elif sss_res:
+        result = sss_res
+    else:
         result = resolve_with_ytdlp(clean_url)
 
     if result:
