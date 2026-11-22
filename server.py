@@ -592,8 +592,8 @@ def privacy_policy():
 @app.get("/api/version")
 def get_version_info():
     return {
-        "versionCode": 17,
-        "versionName": "3.8.3",
+        "versionCode": 18,
+        "versionName": "3.8.4",
         "backendUrl": "https://snaptik-backend.onrender.com/api/extract",
         "apkUrl": "https://raw.githubusercontent.com/juanherrerasandoval70-eng/snaptik-app/main/dist/SnapTik_PRO_v1.0.apk",
         "changelog": "• Reproductor encuadrado al 100% sin desbordamiento lateral en vídeos panorámicos\n• Eliminadas las dimensiones técnicas crudas (1702×720) de las etiquetas\n• Miniaturas HD 1080p reales en Biblioteca y Recientes",
