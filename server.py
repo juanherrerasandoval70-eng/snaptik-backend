@@ -30,18 +30,39 @@ app.add_middleware(
     allow_origins=["*"],
     allow_credentials=False,
     allow_methods=["GET", "POST"],
-    allow_headers=["Content-Type", "Accept", "X-App-Client", "X-App-Timestamp", "X-App-Signature"],
+    allow_headers=["Content-Type", "Accept", "X-App-Client", "X-App-Timestamp", "X-App-Nonce", "X-App-Signature"],
 )
+
+@app.middleware("http")
+async def add_security_headers(request: Request, call_next):
+    response = await call_next(request)
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    response.headers["X-Frame-Options"] = "DENY"
+    response.headers["Referrer-Policy"] = "no-referrer"
+    response.headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains"
+    if "server" in response.headers:
+        del response.headers["server"]
+    return response
 
 UA_DESKTOP = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
 PROXY_URL = os.environ.get("PROXY_URL", "").strip() or None
 RENDER_EXTERNAL_URL = os.environ.get("RENDER_EXTERNAL_URL", "https://snaptik-backend.onrender.com").strip()
 
-# Blindaje Anti-Robo de Servidor: Firma HMAC-SHA256 + Anti-Replay + Rate Limiting
+# Blindaje Anti-Robo de Servidor + Anti-Bot + Anti-Replay + Auto-Ban
 API_HMAC_SECRET = os.environ.get("API_HMAC_SECRET", "STPRO_2026_K9xV#mQ7pL2nR8wZ4jF6b").encode("utf-8")
 ENFORCE_HMAC_AUTH = os.environ.get("ENFORCE_HMAC_AUTH", "true").lower() == "true"
-RATE_LIMIT_MAX_PER_MIN = 30
+RATE_LIMIT_MAX_PER_MIN = 25
 rate_limit_buckets: Dict[str, List[float]] = defaultdict(list)
+ip_strikes: Dict[str, int] = defaultdict(int)
+banned_ips: Dict[str, float] = {}
+used_nonces: Dict[str, float] = {}
+
+BOT_UA_SIGNATURES = (
+    "curl/", "wget/", "python-requests", "python-httpx", "scrapy", "httpclient",
+    "postman", "insomnia", "burp", "sqlmap", "nikto", "nmap", "masscan",
+    "headlesschrome", "phantomjs", "selenium", "playwright", "puppeteer",
+    "bot", "crawler", "spider", "zgrab", "go-http-client", "libwww-perl"
+)
 
 def get_client_ip(request: Request) -> str:
     xff = request.headers.get("x-forwarded-for", "")
@@ -49,41 +70,91 @@ def get_client_ip(request: Request) -> str:
         return xff.split(",")[0].strip()
     return request.client.host if request.client else "unknown"
 
-def check_rate_limit(request: Request):
+def register_strike(ip: str, weight: int = 1):
+    ip_strikes[ip] += weight
+    if ip_strikes[ip] >= 5:
+        banned_ips[ip] = time.time() + 1800.0  # Ban temporal de 30 minutos
+        ip_strikes[ip] = 0
+    if len(banned_ips) > 5000:
+        now = time.time()
+        for k in [k for k, exp in list(banned_ips.items()) if exp < now]:
+            banned_ips.pop(k, None)
+
+def check_bot_and_rate_limit(request: Request, strict_bot_check: bool = True):
     ip = get_client_ip(request)
     now = time.time()
+
+    # 1. Comprobar lista de IPs baneadas por comportamiento abusivo / ataques
+    ban_until = banned_ips.get(ip, 0.0)
+    if ban_until > now:
+        raise HTTPException(status_code=403, detail="Acceso bloqueado temporalmente por actividad sospechosa.")
+
+    # 2. Bloqueo activo de bots, scrapers y herramientas de pentesting
+    if strict_bot_check:
+        ua = (request.headers.get("user-agent") or "").lower().strip()
+        if not ua or any(sig in ua for sig in BOT_UA_SIGNATURES):
+            register_strike(ip, 2)
+            raise HTTPException(status_code=403, detail="Cliente automatizado no permitido.")
+
+    # 3. Rate limiting por ventana deslizante de 60 segundos
     bucket = [t for t in rate_limit_buckets[ip] if (now - t) < 60.0]
     if len(bucket) >= RATE_LIMIT_MAX_PER_MIN:
         rate_limit_buckets[ip] = bucket
+        register_strike(ip, 1)
         raise HTTPException(status_code=429, detail="Demasiadas solicitudes. Intenta en unos segundos.")
     bucket.append(now)
     rate_limit_buckets[ip] = bucket
     if len(rate_limit_buckets) > 5000:
         rate_limit_buckets.clear()
 
+def check_rate_limit(request: Request):
+    check_bot_and_rate_limit(request, strict_bot_check=True)
+
 def verify_app_signature(request: Request, target_url: str):
     if not ENFORCE_HMAC_AUTH:
         return
+    ip = get_client_ip(request)
     client_pkg = request.headers.get("x-app-client", "")
     ts_str = request.headers.get("x-app-timestamp", "")
+    nonce = request.headers.get("x-app-nonce", "").strip()
     sig = request.headers.get("x-app-signature", "").lower().strip()
 
     ALLOWED_CLIENT_PACKAGES = ("com.snaptik.app", "com.snaptikpro.hd.app")
     if client_pkg not in ALLOWED_CLIENT_PACKAGES or not ts_str or not sig:
+        register_strike(ip, 2)
         raise HTTPException(status_code=403, detail="Acceso denegado: cliente no autorizado.")
 
     try:
         ts_val = int(ts_str)
     except ValueError:
+        register_strike(ip, 2)
         raise HTTPException(status_code=403, detail="Firma temporal inválida.")
 
-    if abs(int(time.time()) - ts_val) > 300:
+    now_sec = int(time.time())
+    if abs(now_sec - ts_val) > 180:
+        register_strike(ip, 1)
         raise HTTPException(status_code=403, detail="Solicitud expirada.")
 
-    msg = f"{ts_str}:{target_url}".encode("utf-8")
+    # Anti-Replay: Si incluye X-App-Nonce, cada petición firmada es de un solo uso
+    if nonce:
+        if len(used_nonces) > 10000:
+            cutoff = time.time() - 240.0
+            for k in [k for k, t in list(used_nonces.items()) if t < cutoff]:
+                used_nonces.pop(k, None)
+        if nonce in used_nonces:
+            register_strike(ip, 3)
+            raise HTTPException(status_code=403, detail="Petición duplicada rechazada (Anti-Replay).")
+        msg = f"{ts_str}:{nonce}:{target_url}".encode("utf-8")
+    else:
+        msg = f"{ts_str}:{target_url}".encode("utf-8")
+
     expected = hmac.new(API_HMAC_SECRET, msg, hashlib.sha256).hexdigest().lower()
     if not hmac.compare_digest(sig, expected):
+        register_strike(ip, 3)
         raise HTTPException(status_code=403, detail="Firma criptográfica inválida.")
+
+    if nonce:
+        used_nonces[nonce] = time.time()
 
 # Memoria Caché en RAM con expiración de 1 hora
 CACHE_EXPIRY_SECONDS = 3600
@@ -592,11 +663,11 @@ def privacy_policy():
 @app.get("/api/version")
 def get_version_info():
     return {
-        "versionCode": 18,
-        "versionName": "3.8.4",
+        "versionCode": 19,
+        "versionName": "3.9.0",
         "backendUrl": "https://snaptik-backend.onrender.com/api/extract",
         "apkUrl": "https://raw.githubusercontent.com/juanherrerasandoval70-eng/snaptik-app/main/dist/SnapTik_PRO_v1.0.apk",
-        "changelog": "• Reproductor encuadrado al 100% sin desbordamiento lateral en vídeos panorámicos\n• Eliminadas las dimensiones técnicas crudas (1702×720) de las etiquetas\n• Miniaturas HD 1080p reales en Biblioteca y Recientes",
+        "changelog": "• Blindaje máximo Anti-Crack, Anti-MITM (Proxy.NO_PROXY + networkSecurityConfig) y Anti-Replay con Nonce\n• Protección Anti-Bot y Auto-Ban de 30 min en el servidor\n• Integridad verificada al arranque (anti-repackaging y anti-Frida)",
         "forceUpdate": False
     }
 
