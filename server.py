@@ -1,36 +1,88 @@
 import asyncio
 import base64
+import hashlib
+import hmac
 import json
 import os
 import re
 import time
 import urllib.parse
+from collections import defaultdict
 from typing import Optional, List, Dict, Any
 
 from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse, PlainTextResponse, StreamingResponse
+from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse, StreamingResponse
 from pydantic import BaseModel
 import httpx
 import yt_dlp
 
 app = FastAPI(
-    title="SnapTik PRO - Motor Privado de Extracción",
-    description="Backend API independiente para procesar y descargar vídeos y carruseles de TikTok en máxima calidad.",
-    version="1.1.0"
+    title="SnapTik PRO Engine",
+    version="3.6.0",
+    docs_url=None,
+    redoc_url=None,
+    openapi_url=None,
 )
 
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_credentials=False,
+    allow_methods=["GET", "POST"],
+    allow_headers=["Content-Type", "Accept", "X-App-Client", "X-App-Timestamp", "X-App-Signature"],
 )
 
 UA_DESKTOP = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
 PROXY_URL = os.environ.get("PROXY_URL", "").strip() or None
 RENDER_EXTERNAL_URL = os.environ.get("RENDER_EXTERNAL_URL", "https://snaptik-backend.onrender.com").strip()
+
+# Blindaje Anti-Robo de Servidor: Firma HMAC-SHA256 + Anti-Replay + Rate Limiting
+API_HMAC_SECRET = os.environ.get("API_HMAC_SECRET", "STPRO_2026_K9xV#mQ7pL2nR8wZ4jF6b").encode("utf-8")
+ENFORCE_HMAC_AUTH = os.environ.get("ENFORCE_HMAC_AUTH", "true").lower() == "true"
+RATE_LIMIT_MAX_PER_MIN = 30
+rate_limit_buckets: Dict[str, List[float]] = defaultdict(list)
+
+def get_client_ip(request: Request) -> str:
+    xff = request.headers.get("x-forwarded-for", "")
+    if xff:
+        return xff.split(",")[0].strip()
+    return request.client.host if request.client else "unknown"
+
+def check_rate_limit(request: Request):
+    ip = get_client_ip(request)
+    now = time.time()
+    bucket = [t for t in rate_limit_buckets[ip] if (now - t) < 60.0]
+    if len(bucket) >= RATE_LIMIT_MAX_PER_MIN:
+        rate_limit_buckets[ip] = bucket
+        raise HTTPException(status_code=429, detail="Demasiadas solicitudes. Intenta en unos segundos.")
+    bucket.append(now)
+    rate_limit_buckets[ip] = bucket
+    if len(rate_limit_buckets) > 5000:
+        rate_limit_buckets.clear()
+
+def verify_app_signature(request: Request, target_url: str):
+    if not ENFORCE_HMAC_AUTH:
+        return
+    client_pkg = request.headers.get("x-app-client", "")
+    ts_str = request.headers.get("x-app-timestamp", "")
+    sig = request.headers.get("x-app-signature", "").lower().strip()
+
+    if client_pkg != "com.snaptik.app" or not ts_str or not sig:
+        raise HTTPException(status_code=403, detail="Acceso denegado: cliente no autorizado.")
+
+    try:
+        ts_val = int(ts_str)
+    except ValueError:
+        raise HTTPException(status_code=403, detail="Firma temporal inválida.")
+
+    if abs(int(time.time()) - ts_val) > 300:
+        raise HTTPException(status_code=403, detail="Solicitud expirada.")
+
+    msg = f"{ts_str}:{target_url}".encode("utf-8")
+    expected = hmac.new(API_HMAC_SECRET, msg, hashlib.sha256).hexdigest().lower()
+    if not hmac.compare_digest(sig, expected):
+        raise HTTPException(status_code=403, detail="Firma criptográfica inválida.")
 
 # Memoria Caché en RAM con expiración de 1 hora
 CACHE_EXPIRY_SECONDS = 3600
@@ -513,14 +565,31 @@ def serve_app_ads_txt():
             return PlainTextResponse(content=f.read(), media_type="text/plain; charset=utf-8")
     raise HTTPException(status_code=404, detail="app-ads.txt not found")
 
+@app.get("/privacy", response_class=HTMLResponse)
+def privacy_policy():
+    return """<!DOCTYPE html><html lang="es"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Política de Privacidad — SnapTik PRO</title>
+<style>body{font-family:-apple-system,BlinkMacSystemFont,Segoe UI,Roboto,sans-serif;background:#08080c;color:#e8e8f0;max-width:740px;margin:0 auto;padding:32px 20px;line-height:1.65}h1,h2{color:#fff}a{color:#00e5ff}</style></head>
+<body><h1>Política de Privacidad / Privacy Policy — SnapTik PRO</h1>
+<p><strong>Última actualización:</strong> Noviembre 2026</p>
+<h2>1. Datos que recopilamos / Data We Collect</h2>
+<p>SnapTik PRO (<code>com.snaptik.app</code>) no solicita registro ni recopila nombres, correos, contraseñas ni archivos personales. El historial de descargas se guarda exclusivamente de forma local en tu dispositivo.</p>
+<h2>2. Publicidad / Advertising</h2>
+<p>Utilizamos el SDK de <strong>Start.io</strong> para mostrar anuncios que financian el servidor gratuito. Start.io puede utilizar el Identificador de Publicidad de Android (GAID) conforme a su propia <a href="https://www.start.io/policy/privacy-policy/">Política de Privacidad</a>. Puedes restablecer o limitar el seguimiento en Ajustes de Google de tu dispositivo.</p>
+<h2>3. Permisos / Permissions</h2>
+<ul><li><strong>Internet / Red:</strong> para resolver enlaces multimedia y mostrar anuncios.</li><li><strong>Almacenamiento / Galería:</strong> únicamente para guardar los archivos que tú solicitas descargar.</li></ul>
+<h2>4. Derechos de Autor / Copyright</h2>
+<p>El usuario es responsable de respetar los derechos de autor y descargar únicamente contenido propio o autorizado.</p>
+<h2>5. Contacto / Contact</h2>
+<p>Para soporte o solicitudes de privacidad, escríbenos a través del repositorio oficial de soporte.</p></body></html>"""
+
 @app.get("/api/version")
 def get_version_info():
     return {
-        "versionCode": 11,
-        "versionName": "3.5.0",
+        "versionCode": 12,
+        "versionName": "3.6.0",
         "backendUrl": "https://snaptik-backend.onrender.com/api/extract",
         "apkUrl": "https://raw.githubusercontent.com/juanherrerasandoval70-eng/snaptik-app/main/dist/SnapTik_PRO_v1.0.apk",
-        "changelog": "• Start.io SDK 4.11.5 completo verificado con Google Advertising ID (GAID) real + App ID 210251211\n• Banner inferior, Native Ad Liquid Glass, Interstitial, Return Ads y Video Reward listos para monetización real",
+        "changelog": "• Blindaje criptográfico HMAC-SHA256 anti-robo de servidor y anti-replay\n• Protección anti-clonado, anti-Frida y firma de producción verificada\n• Política de Privacidad oficial y optimizaciones para tiendas Android",
         "forceUpdate": False
     }
 
@@ -564,7 +633,10 @@ async def _run_extraction_pipeline(clean_url: str) -> Optional[Dict[str, Any]]:
         return await asyncio.to_thread(resolve_with_ytdlp, clean_url)
 
 @app.post("/api/extract")
-async def extract_media(req: ExtractRequest):
+async def extract_media(req: ExtractRequest, request: Request):
+    check_rate_limit(request)
+    verify_app_signature(request, req.url)
+
     clean_url = clean_tiktok_url(req.url)
     if not clean_url:
         raise HTTPException(
@@ -640,7 +712,8 @@ def is_allowed_media_url(target_url: str) -> bool:
         return False
 
 @app.get("/api/proxy-download")
-async def proxy_download(url: str = Query(...), filename: str = Query("download.mp4")):
+async def proxy_download(request: Request, url: str = Query(...), filename: str = Query("download.mp4")):
+    check_rate_limit(request)
     if not is_allowed_media_url(url):
         raise HTTPException(status_code=403, detail="Dominio multimedia no autorizado")
 
