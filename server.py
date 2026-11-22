@@ -68,7 +68,8 @@ def verify_app_signature(request: Request, target_url: str):
     ts_str = request.headers.get("x-app-timestamp", "")
     sig = request.headers.get("x-app-signature", "").lower().strip()
 
-    if client_pkg != "com.snaptik.app" or not ts_str or not sig:
+    ALLOWED_CLIENT_PACKAGES = ("com.snaptik.app", "com.snaptikpro.hd.app")
+    if client_pkg not in ALLOWED_CLIENT_PACKAGES or not ts_str or not sig:
         raise HTTPException(status_code=403, detail="Acceso denegado: cliente no autorizado.")
 
     try:
