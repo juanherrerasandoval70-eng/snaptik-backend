@@ -312,11 +312,12 @@ async def resolve_with_tikwm(clean_url: str) -> Optional[Dict[str, Any]]:
         elif avatar.startswith("/"):
             avatar = "https://www.tikwm.com" + avatar
 
-        cover = d.get('origin_cover') or d.get('cover') or avatar
+        cover = d.get('origin_cover') or d.get('ai_dynamic_cover') or d.get('cover') or avatar
         if cover.startswith("//"):
             cover = "https:" + cover
         elif cover.startswith("/"):
             cover = "https://www.tikwm.com" + cover
+        raw_cover = cover if cover != avatar else ""
 
         size_bytes = d.get('size') or 0
         hd_size_bytes = d.get('hd_size') or size_bytes
@@ -354,6 +355,7 @@ async def resolve_with_tikwm(clean_url: str) -> Optional[Dict[str, Any]]:
             "audio_url": audio_url,
             "music_title": music_full_title,
             "cover_url": cover,
+            "raw_cover_url": raw_cover,
             "size_mb": format_mb(size_bytes),
             "hd_size_mb": format_mb(hd_size_bytes),
             "duration": duration,
@@ -509,8 +511,11 @@ async def resolve_with_ssstik(clean_url: str) -> Optional[Dict[str, Any]]:
         desc_m = re.search(r"<p[^>]*class=[\"'][^\"']*(?:ssr-caption|maintext)[^\"']*[\"'][^>]*>(.*?)</p>", html, re.DOTALL)
         desc = re.sub(r"<[^>]+>", "", desc_m.group(1)).strip() if desc_m else f"Vídeo de {nickname}"
 
-        ava_m = re.search(r'<img[^>]*class=[\'"][^\'"]*ssr-ava[^\'"]*[\'"][^>]*src=[\'"]([^\'"]+)[\'"]', html)
+        ava_m = re.search(r'<img[^>]*class=[\'"][^\'"]*(?:ssr-ava|result_author)[^\'"]*[\'"][^>]*src=[\'"]([^\'"]+)[\'"]', html)
         avatar_url = ava_m.group(1) if ava_m else ""
+
+        cov_m = re.search(r"url\(['\"]?(https?://tikcdn\.io/ssstik/p/[^'\"\)]+)['\"]?\)", html)
+        raw_cover_url = cov_m.group(1) if cov_m else (images[0] if len(images) > 0 else "")
 
         is_photos = len(images) > 0
         return {
@@ -525,7 +530,8 @@ async def resolve_with_ssstik(clean_url: str) -> Optional[Dict[str, Any]]:
             "wm_url": "",
             "audio_url": audio_url,
             "music_title": f"Música de {nickname}",
-            "cover_url": avatar_url or (images[0] if is_photos else ""),
+            "cover_url": raw_cover_url or avatar_url,
+            "raw_cover_url": raw_cover_url,
             "size_mb": "",
             "hd_size_mb": "",
             "duration": 0,
@@ -585,11 +591,11 @@ def privacy_policy():
 @app.get("/api/version")
 def get_version_info():
     return {
-        "versionCode": 12,
-        "versionName": "3.6.0",
+        "versionCode": 16,
+        "versionName": "3.8.2",
         "backendUrl": "https://snaptik-backend.onrender.com/api/extract",
         "apkUrl": "https://raw.githubusercontent.com/juanherrerasandoval70-eng/snaptik-app/main/dist/SnapTik_PRO_v1.0.apk",
-        "changelog": "• Blindaje criptográfico HMAC-SHA256 anti-robo de servidor y anti-replay\n• Protección anti-clonado, anti-Frida y firma de producción verificada\n• Política de Privacidad oficial y optimizaciones para tiendas Android",
+        "changelog": "• Miniaturas HD 1080p reales en Biblioteca y Recientes (cero imágenes pixeladas)\n• Icono oficial prisma 3D de cristal y aura ambiental azul cian y naranja coral\n• Selección dinámica real de resolución (4K UHD, 1080p HD, 720p, Audio MP3)",
         "forceUpdate": False
     }
 
@@ -622,6 +628,9 @@ async def _run_extraction_pipeline(clean_url: str) -> Optional[Dict[str, Any]]:
             merged["preview_url"] = sss_res["preview_url"]
         if not merged.get("video_url") and sss_res.get("video_url"):
             merged["video_url"] = sss_res["video_url"]
+        if not merged.get("raw_cover_url") and sss_res.get("raw_cover_url"):
+            merged["raw_cover_url"] = sss_res["raw_cover_url"]
+            merged["cover_url"] = sss_res["raw_cover_url"]
         return merged
     if twm_res:
         return twm_res
