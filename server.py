@@ -1,4 +1,6 @@
 import asyncio
+import base64
+import json
 import os
 import re
 import time
@@ -34,20 +36,43 @@ RENDER_EXTERNAL_URL = os.environ.get("RENDER_EXTERNAL_URL", "https://snaptik-bac
 CACHE_EXPIRY_SECONDS = 3600
 cache_store: Dict[str, Dict[str, Any]] = {}
 
-# Pool de conexiones optimizado de alta velocidad
-http_limits = httpx.Limits(max_keepalive_connections=50, max_connections=200)
+# Pool de conexiones optimizado de alta velocidad (reutilización HTTP Keep-Alive)
+http_limits = httpx.Limits(max_keepalive_connections=60, max_connections=200)
+shared_async_client: Optional[httpx.AsyncClient] = None
+
+# Semáforo anti-OOM para yt-dlp (máximo 2 procesos pesados simultáneos en 512 MB RAM)
+ytdlp_semaphore = asyncio.Semaphore(2)
+
+# Deduplicación de peticiones en vuelo (In-Flight Request Coalescing)
+in_flight_extractions: Dict[str, asyncio.Task] = {}
+
+# Caché del token SSSTik (TTL 10 minutos -> ahorra 1 petición HTTP completa por extracción)
+ssstik_token_cache: Dict[str, Any] = {"tt": None, "furl": "abc", "ts": 0.0}
+SSSTIK_TOKEN_TTL = 600.0
+
+def get_async_client() -> httpx.AsyncClient:
+    global shared_async_client
+    if shared_async_client is None or shared_async_client.is_closed:
+        kwargs: Dict[str, Any] = {
+            "timeout": httpx.Timeout(12.0, connect=6.0),
+            "limits": http_limits,
+            "headers": {"User-Agent": UA_DESKTOP},
+            "follow_redirects": True,
+        }
+        if PROXY_URL:
+            kwargs["proxy"] = PROXY_URL
+        shared_async_client = httpx.AsyncClient(**kwargs)
+    return shared_async_client
 
 async def background_auto_maintenance():
     """Mantenimiento automático y Keep-Alive 24/7: Evita que Render duerma y purga RAM periódicamente."""
     while True:
         try:
             await asyncio.sleep(600)  # Cada 10 minutos
-            # Auto-ping externo para mantener activo el servidor
             if RENDER_EXTERNAL_URL:
-                async with httpx.AsyncClient(timeout=15.0) as client:
-                    await client.get(f"{RENDER_EXTERNAL_URL}/api/health")
+                client = get_async_client()
+                await client.get(f"{RENDER_EXTERNAL_URL}/api/health", timeout=15.0)
 
-            # Mantenimiento de memoria: limpiar entradas expiradas
             now = time.time()
             expired_keys = [k for k, v in list(cache_store.items()) if (now - v["timestamp"] > CACHE_EXPIRY_SECONDS)]
             for k in expired_keys:
@@ -57,7 +82,14 @@ async def background_auto_maintenance():
 
 @app.on_event("startup")
 async def on_startup():
+    get_async_client()
     asyncio.create_task(background_auto_maintenance())
+
+@app.on_event("shutdown")
+async def on_shutdown():
+    global shared_async_client
+    if shared_async_client is not None and not shared_async_client.is_closed:
+        await shared_async_client.aclose()
 
 class ExtractRequest(BaseModel):
     url: str
@@ -156,288 +188,307 @@ def resolve_with_ytdlp(clean_url: str) -> Optional[Dict[str, Any]]:
         traceback.print_exc()
         return None
 
-def resolve_with_tikwm(clean_url: str) -> Optional[Dict[str, Any]]:
+async def resolve_with_tikwm(clean_url: str) -> Optional[Dict[str, Any]]:
     api_url = f"https://www.tikwm.com/api/?url={urllib.parse.quote(clean_url)}&hd=1"
     try:
-        client_kwargs = {"timeout": 12.0}
-        if PROXY_URL:
-            client_kwargs["proxy"] = PROXY_URL
+        client = get_async_client()
+        r = await client.get(api_url, headers={"User-Agent": UA_DESKTOP})
+        if r.status_code != 200:
+            return None
+        js = r.json()
+        if js.get('code') != 0:
+            return None
 
-        with httpx.Client(**client_kwargs) as client:
-            r = client.get(api_url, headers={"User-Agent": UA_DESKTOP})
-            if r.status_code != 200:
-                return None
-            js = r.json()
-            if js.get('code') != 0:
-                return None
+        d = js.get('data', {})
+        play_url = d.get('play', '')
+        if play_url.startswith("//"):
+            play_url = "https:" + play_url
+        elif play_url.startswith("/"):
+            play_url = "https://www.tikwm.com" + play_url
 
-            d = js.get('data', {})
-            play_url = d.get('play', '')
-            if play_url.startswith("//"):
-                play_url = "https:" + play_url
-            elif play_url.startswith("/"):
-                play_url = "https://www.tikwm.com" + play_url
+        hd_play_url = d.get('hdplay') or play_url
+        if hd_play_url.startswith("//"):
+            hd_play_url = "https:" + hd_play_url
+        elif hd_play_url.startswith("/"):
+            hd_play_url = "https://www.tikwm.com" + hd_play_url
 
-            hd_play_url = d.get('hdplay') or play_url
-            if hd_play_url.startswith("//"):
-                hd_play_url = "https:" + hd_play_url
-            elif hd_play_url.startswith("/"):
-                hd_play_url = "https://www.tikwm.com" + hd_play_url
+        wm_play_url = d.get('wmplay') or ''
+        if wm_play_url.startswith("//"):
+            wm_play_url = "https:" + wm_play_url
+        elif wm_play_url.startswith("/"):
+            wm_play_url = "https://www.tikwm.com" + wm_play_url
 
-            wm_play_url = d.get('wmplay') or ''
-            if wm_play_url.startswith("//"):
-                wm_play_url = "https:" + wm_play_url
-            elif wm_play_url.startswith("/"):
-                wm_play_url = "https://www.tikwm.com" + wm_play_url
+        if not play_url:
+            play_url = hd_play_url
 
-            if not play_url:
-                play_url = hd_play_url
+        images = d.get('images') or []
+        if images:
+            images = [("https:" + img if img.startswith("//") else ("https://www.tikwm.com" + img if img.startswith("/") else img)) for img in images]
 
-            images = d.get('images') or []
-            if images:
-                images = [("https:" + img if img.startswith("//") else ("https://www.tikwm.com" + img if img.startswith("/") else img)) for img in images]
+        audio_url = d.get('music') or ''
+        if audio_url.startswith("//"):
+            audio_url = "https:" + audio_url
+        elif audio_url.startswith("/"):
+            audio_url = "https://www.tikwm.com" + audio_url
 
-            audio_url = d.get('music') or ''
-            if audio_url.startswith("//"):
-                audio_url = "https:" + audio_url
-            elif audio_url.startswith("/"):
-                audio_url = "https://www.tikwm.com" + audio_url
+        music_info = d.get('music_info') or {}
+        m_title = (music_info.get('title') or '').strip()
+        m_author = (music_info.get('author') or '').strip()
+        if m_title and m_author:
+            music_full_title = f"{m_title} • {m_author}"
+        elif m_title:
+            music_full_title = m_title
+        else:
+            music_full_title = "Audio Original"
 
-            music_info = d.get('music_info') or {}
-            m_title = (music_info.get('title') or '').strip()
-            m_author = (music_info.get('author') or '').strip()
-            if m_title and m_author:
-                music_full_title = f"{m_title} • {m_author}"
-            elif m_title:
-                music_full_title = m_title
-            else:
-                music_full_title = "Audio Original"
+        if not audio_url and images and play_url:
+            audio_url = play_url
 
-            if not audio_url and images and play_url:
+        # Si es un carrusel de fotos y play_url es en realidad un stream de audio mpeg
+        if images and ("audio_mpeg" in play_url or "mime_type=audio" in play_url):
+            if not audio_url:
                 audio_url = play_url
+            play_url = ""
+            hd_play_url = ""
 
-            # Si es un carrusel de fotos y play_url es en realidad un stream de audio mpeg
-            if images and ("audio_mpeg" in play_url or "mime_type=audio" in play_url):
-                if not audio_url:
-                    audio_url = play_url
-                play_url = ""
-                hd_play_url = ""
+        author_obj = d.get('author') or {}
+        nickname = author_obj.get('nickname') or 'Creador de TikTok'
+        unique_id = author_obj.get('unique_id') or 'tiktok_user'
+        avatar = author_obj.get('avatar') or ''
+        if avatar.startswith("//"):
+            avatar = "https:" + avatar
+        elif avatar.startswith("/"):
+            avatar = "https://www.tikwm.com" + avatar
 
-            author_obj = d.get('author') or {}
-            nickname = author_obj.get('nickname') or 'Creador de TikTok'
-            unique_id = author_obj.get('unique_id') or 'tiktok_user'
-            avatar = author_obj.get('avatar') or ''
-            if avatar.startswith("//"):
-                avatar = "https:" + avatar
-            elif avatar.startswith("/"):
-                avatar = "https://www.tikwm.com" + avatar
+        cover = d.get('origin_cover') or d.get('cover') or avatar
+        if cover.startswith("//"):
+            cover = "https:" + cover
+        elif cover.startswith("/"):
+            cover = "https://www.tikwm.com" + cover
 
-            cover = d.get('origin_cover') or d.get('cover') or avatar
-            if cover.startswith("//"):
-                cover = "https:" + cover
-            elif cover.startswith("/"):
-                cover = "https://www.tikwm.com" + cover
+        size_bytes = d.get('size') or 0
+        hd_size_bytes = d.get('hd_size') or size_bytes
+        duration = d.get('duration') or 0
+        width = d.get('width') or 0
+        height = d.get('height') or 0
+        max_dim = max(width, height)
+        min_dim = min(width, height)
 
-            size_bytes = d.get('size') or 0
-            hd_size_bytes = d.get('hd_size') or size_bytes
-            duration = d.get('duration') or 0
-            width = d.get('width') or 0
-            height = d.get('height') or 0
-            max_dim = max(width, height)
-            min_dim = min(width, height)
+        is_4k = bool(not images and (
+            max_dim >= 2560 or min_dim >= 1440 or
+            (hd_size_bytes > 0 and duration > 0 and (hd_size_bytes / max(1, duration)) > 550000) or
+            hd_size_bytes > 18 * 1024 * 1024
+        ))
 
-            is_4k = bool(not images and (
-                max_dim >= 2560 or min_dim >= 1440 or
-                (hd_size_bytes > 0 and duration > 0 and (hd_size_bytes / max(1, duration)) > 550000) or
-                hd_size_bytes > 18 * 1024 * 1024
-            ))
+        if images:
+            detected_quality = f"CARRUSEL ({len(images)} FOTOS + MÚSICA)"
+        elif is_4k:
+            detected_quality = "4K UHD DETECTADO"
+        elif hd_size_bytes > size_bytes or max_dim >= 1920:
+            detected_quality = "1080p FULL HD"
+        else:
+            detected_quality = "720p HD"
 
-            if images:
-                detected_quality = f"CARRUSEL ({len(images)} FOTOS + MÚSICA)"
-            elif is_4k:
-                detected_quality = "4K UHD DETECTADO"
-            elif hd_size_bytes > size_bytes or max_dim >= 1920:
-                detected_quality = "1080p FULL HD"
-            else:
-                detected_quality = "720p HD"
-
-            return {
-                "id": str(d.get('id') or int(time.time())),
-                "source_url": clean_url,
-                "title": (d.get('title') or (f"Carrusel de {nickname}" if images else f"Vídeo de {nickname}")).strip(),
-                "preview_url": play_url,
-                "video_url": play_url,
-                "hd_url": hd_play_url or play_url,
-                "uhd_4k_url": hd_play_url or play_url,
-                "sd_url": play_url,
-                "wm_url": wm_play_url,
-                "audio_url": audio_url,
-                "music_title": music_full_title,
-                "cover_url": cover,
-                "size_mb": format_mb(size_bytes),
-                "hd_size_mb": format_mb(hd_size_bytes),
-                "duration": duration,
-                "width": width,
-                "height": height,
-                "is_4k": is_4k,
-                "detected_quality": detected_quality,
-                "images": images,
-                "author": {
-                    "nickname": nickname,
-                    "unique_id": unique_id,
-                    "avatar": avatar
-                },
-                "engine": "tikwm-proxy"
-            }
-    except Exception as e:
+        return {
+            "id": str(d.get('id') or int(time.time())),
+            "source_url": clean_url,
+            "title": (d.get('title') or (f"Carrusel de {nickname}" if images else f"Vídeo de {nickname}")).strip(),
+            "preview_url": play_url,
+            "video_url": play_url,
+            "hd_url": hd_play_url or play_url,
+            "uhd_4k_url": hd_play_url or play_url,
+            "sd_url": play_url,
+            "wm_url": wm_play_url,
+            "audio_url": audio_url,
+            "music_title": music_full_title,
+            "cover_url": cover,
+            "size_mb": format_mb(size_bytes),
+            "hd_size_mb": format_mb(hd_size_bytes),
+            "duration": duration,
+            "width": width,
+            "height": height,
+            "is_4k": is_4k,
+            "detected_quality": detected_quality,
+            "images": images,
+            "author": {
+                "nickname": nickname,
+                "unique_id": unique_id,
+                "avatar": avatar
+            },
+            "engine": "tikwm-async-pool"
+        }
+    except Exception:
         import traceback
         traceback.print_exc()
         return None
 
-def resolve_with_ssstik(clean_url: str) -> Optional[Dict[str, Any]]:
+async def get_ssstik_token(force_refresh: bool = False) -> Optional[tuple]:
+    now = time.time()
+    if (not force_refresh and ssstik_token_cache["tt"]
+            and (now - ssstik_token_cache["ts"] < SSSTIK_TOKEN_TTL)):
+        return ssstik_token_cache["tt"], ssstik_token_cache["furl"]
+
+    client = get_async_client()
+    home = await client.get("https://ssstik.io/es")
+    tt_m = re.search(r"s_tt\s*=\s*'([^']+)'", home.text)
+    furl_m = re.search(r"s_furl\s*=\s*'([^']+)'", home.text)
+    if not tt_m:
+        return None
+    s_tt = tt_m.group(1)
+    s_furl = furl_m.group(1) if furl_m else "abc"
+    ssstik_token_cache["tt"] = s_tt
+    ssstik_token_cache["furl"] = s_furl
+    ssstik_token_cache["ts"] = now
+    return s_tt, s_furl
+
+async def resolve_with_ssstik(clean_url: str) -> Optional[Dict[str, Any]]:
     try:
-        client_kwargs = {"timeout": 12.0, "headers": {"User-Agent": UA_DESKTOP}}
-        if PROXY_URL:
-            client_kwargs["proxy"] = PROXY_URL
+        client = get_async_client()
+        tok = await get_ssstik_token(force_refresh=False)
+        if not tok:
+            return None
+        s_tt, s_furl = tok
 
-        with httpx.Client(**client_kwargs) as client:
-            home = client.get("https://ssstik.io/es")
-            tt_m = re.search(r"s_tt\s*=\s*'([^']+)'", home.text)
-            furl_m = re.search(r"s_furl\s*=\s*'([^']+)'", home.text)
-            if not tt_m:
+        post_headers = {
+            "HX-Request": "true",
+            "HX-Target": "target",
+            "HX-Current-URL": "https://ssstik.io/es",
+            "Origin": "https://ssstik.io",
+            "Referer": "https://ssstik.io/es",
+            "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8"
+        }
+        res = await client.post(
+            f"https://ssstik.io/{s_furl}?url=dl",
+            data={"id": clean_url, "locale": "es", "tt": s_tt},
+            headers=post_headers
+        )
+        html = res.text
+
+        # Si el token expiró, refrescar 1 vez automáticamente
+        if "tikcdn.io" not in html and "slides_data" not in html and "data-splide-lazy" not in html:
+            tok = await get_ssstik_token(force_refresh=True)
+            if not tok:
                 return None
-
-            s_tt = tt_m.group(1)
-            s_furl = furl_m.group(1) if furl_m else "abc"
-
-            post_data = {
-                "id": clean_url,
-                "locale": "es",
-                "tt": s_tt
-            }
-            post_headers = {
-                "HX-Request": "true",
-                "HX-Target": "target",
-                "HX-Current-URL": "https://ssstik.io/es",
-                "Origin": "https://ssstik.io",
-                "Referer": "https://ssstik.io/es",
-                "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8"
-            }
-            res = client.post(f"https://ssstik.io/{s_furl}?url=dl", data=post_data, headers=post_headers)
+            s_tt, s_furl = tok
+            res = await client.post(
+                f"https://ssstik.io/{s_furl}?url=dl",
+                data={"id": clean_url, "locale": "es", "tt": s_tt},
+                headers=post_headers
+            )
             html = res.text
 
-            v_m = re.search(r"href=[\"'](https?://tikcdn\.io/ssstik/(?!m/)[^\"']+)[\"']", html)
-            prev_m = re.search(r"ssrPreview\(['\"](https?://tikcdn\.io/ssstik/v/[^'\"]+)['\"]\)", html)
-            a_m = re.search(r"href=[\"'](https?://tikcdn\.io/ssstik/m/[^\"']+)[\"']", html)
+        v_m = re.search(r"href=[\"'](https?://tikcdn\.io/ssstik/(?!m/)[^\"']+)[\"']", html)
+        prev_m = re.search(r"ssrPreview\(['\"](https?://tikcdn\.io/ssstik/v/[^'\"]+)['\"]\)", html)
+        a_m = re.search(r"href=[\"'](https?://tikcdn\.io/ssstik/m/[^\"']+)[\"']", html)
 
-            video_url = v_m.group(1) if v_m else ""
-            preview_url = prev_m.group(1) if prev_m else video_url
-            audio_url = a_m.group(1) if a_m else ""
+        video_url = v_m.group(1) if v_m else ""
+        preview_url = prev_m.group(1) if prev_m else video_url
+        audio_url = a_m.group(1) if a_m else ""
 
-            images = re.findall(r"data-splide-lazy=[\"'](https?://[^\"']+)[\"']", html)
+        images = re.findall(r"data-splide-lazy=[\"'](https?://[^\"']+)[\"']", html)
 
-            # Extraer carrusel de fotos completo desde slides_data si está presente
-            m_slides = re.search(r'name=["\']?slides_data["\']?[^>]*value=["\'](.*?)["\']', html)
-            if m_slides:
+        # Extraer carrusel de fotos completo desde slides_data si está presente
+        m_slides = re.search(r'name=["\']?slides_data["\']?[^>]*value=["\'](.*?)["\']', html)
+        if m_slides:
+            try:
+                raw_b64 = m_slides.group(1)
+                slides_dict = json.loads(base64.b64decode(raw_b64).decode('utf-8'))
+                extracted_imgs = []
+                for k in sorted(slides_dict.keys(), key=lambda x: int(x) if x.isdigit() else 9999):
+                    if k.isdigit() and isinstance(slides_dict[k], dict):
+                        slide_img = slides_dict[k].get("url")
+                        if slide_img:
+                            if not slide_img.startswith("https://tikcdn.io/"):
+                                b64_img = base64.b64encode(slide_img.encode('utf-8')).decode('utf-8')
+                                extracted_imgs.append(f"https://tikcdn.io/ssstik/{b64_img}")
+                            else:
+                                extracted_imgs.append(slide_img)
+                if extracted_imgs:
+                    images = extracted_imgs
+                if not audio_url and slides_dict.get("music"):
+                    raw_music = slides_dict.get("music")
+                    if raw_music and not raw_music.startswith("https://tikcdn.io/"):
+                        b64_music = base64.b64encode(raw_music.encode('utf-8')).decode('utf-8')
+                        audio_url = f"https://tikcdn.io/ssstik/m/{b64_music}"
+                    else:
+                        audio_url = raw_music
+            except Exception:
+                pass
+
+        # También buscar enlaces directos de descarga de diapositivas
+        slide_anchors = re.findall(r'<a\s+[^>]*href=["\']([^"\']+)["\'][^>]*class=["\'][^"\']*slide[^"\']*["\']', html)
+        for sa in slide_anchors:
+            if sa not in images:
+                images.append(sa)
+
+        # Verificar si video_url es en realidad una imagen de diapositiva o photomode
+        is_video_actually_image = False
+        if video_url:
+            lower_v = video_url.lower()
+            if "photomode" in lower_v or lower_v.endswith(".webp") or lower_v.endswith(".jpg") or lower_v.endswith(".png") or lower_v.endswith(".jpeg"):
+                is_video_actually_image = True
+            elif "/ssstik/ahr0" in lower_v or "/ssstik/a/" in lower_v:
                 try:
-                    raw_b64 = m_slides.group(1)
-                    slides_dict = json.loads(base64.b64decode(raw_b64).decode('utf-8'))
-                    extracted_imgs = []
-                    for k in sorted(slides_dict.keys(), key=lambda x: int(x) if x.isdigit() else 9999):
-                        if k.isdigit() and isinstance(slides_dict[k], dict):
-                            slide_img = slides_dict[k].get("url")
-                            if slide_img:
-                                if not slide_img.startswith("https://tikcdn.io/"):
-                                    b64_img = base64.b64encode(slide_img.encode('utf-8')).decode('utf-8')
-                                    extracted_imgs.append(f"https://tikcdn.io/ssstik/{b64_img}")
-                                else:
-                                    extracted_imgs.append(slide_img)
-                    if extracted_imgs:
-                        images = extracted_imgs
-                    if not audio_url and slides_dict.get("music"):
-                        raw_music = slides_dict.get("music")
-                        if raw_music and not raw_music.startswith("https://tikcdn.io/"):
-                            b64_music = base64.b64encode(raw_music.encode('utf-8')).decode('utf-8')
-                            audio_url = f"https://tikcdn.io/ssstik/m/{b64_music}"
-                        else:
-                            audio_url = raw_music
+                    b64_part = video_url.split("/ssstik/")[-1].split("?")[0]
+                    if b64_part.startswith("a/"):
+                        b64_part = b64_part[2:]
+                    pad = len(b64_part) % 4
+                    if pad:
+                        b64_part += "=" * (4 - pad)
+                    dec = base64.b64decode(b64_part).decode('utf-8', errors='ignore').lower()
+                    if "photomode" in dec or ".webp" in dec or ".jpg" in dec or ".png" in dec or ".jpeg" in dec:
+                        is_video_actually_image = True
                 except Exception:
                     pass
 
-            # También buscar enlaces directos de descarga de diapositivas
-            slide_anchors = re.findall(r'<a\s+[^>]*href=["\']([^"\']+)["\'][^>]*class=["\'][^"\']*slide[^"\']*["\']', html)
-            for sa in slide_anchors:
-                if sa not in images:
-                    images.append(sa)
+        if is_video_actually_image:
+            if not images:
+                images.append(video_url)
+            video_url = ""
 
-            # Verificar si video_url es en realidad una imagen de diapositiva o photomode
-            is_video_actually_image = False
-            if video_url:
-                lower_v = video_url.lower()
-                if "photomode" in lower_v or lower_v.endswith(".webp") or lower_v.endswith(".jpg") or lower_v.endswith(".png") or lower_v.endswith(".jpeg"):
-                    is_video_actually_image = True
-                elif "/ssstik/ahr0" in lower_v or "/ssstik/a/" in lower_v:
-                    try:
-                        b64_part = video_url.split("/ssstik/")[-1].split("?")[0]
-                        if b64_part.startswith("a/"):
-                            b64_part = b64_part[2:]
-                        pad = len(b64_part) % 4
-                        if pad:
-                            b64_part += "=" * (4 - pad)
-                        dec = base64.b64decode(b64_part).decode('utf-8', errors='ignore').lower()
-                        if "photomode" in dec or ".webp" in dec or ".jpg" in dec or ".png" in dec or ".jpeg" in dec:
-                            is_video_actually_image = True
-                    except Exception:
-                        pass
+        video_url = video_url if not is_video_actually_image else ""
 
-            if is_video_actually_image:
-                if not images:
-                    images.append(video_url)
-                video_url = ""
+        if not video_url and not images:
+            return None
 
-            video_url = video_url if not is_video_actually_image else ""
+        name_m = re.search(r"<h2>(.*?)</h2>", html)
+        nickname = re.sub(r"<[^>]+>", "", name_m.group(1)).strip() if name_m else "Creador de TikTok"
 
-            if not video_url and not images:
-                return None
+        desc_m = re.search(r"<p[^>]*class=[\"'][^\"']*(?:ssr-caption|maintext)[^\"']*[\"'][^>]*>(.*?)</p>", html, re.DOTALL)
+        desc = re.sub(r"<[^>]+>", "", desc_m.group(1)).strip() if desc_m else f"Vídeo de {nickname}"
 
-            name_m = re.search(r"<h2>(.*?)</h2>", html)
-            nickname = re.sub(r"<[^>]+>", "", name_m.group(1)).strip() if name_m else "Creador de TikTok"
+        ava_m = re.search(r'<img[^>]*class=[\'"][^\'"]*ssr-ava[^\'"]*[\'"][^>]*src=[\'"]([^\'"]+)[\'"]', html)
+        avatar_url = ava_m.group(1) if ava_m else ""
 
-            desc_m = re.search(r"<p[^>]*class=[\"'][^\"']*(?:ssr-caption|maintext)[^\"']*[\"'][^>]*>(.*?)</p>", html, re.DOTALL)
-            desc = re.sub(r"<[^>]+>", "", desc_m.group(1)).strip() if desc_m else f"Vídeo de {nickname}"
-
-            ava_m = re.search(r'<img[^>]*class=[\'"][^\'"]*ssr-ava[^\'"]*[\'"][^>]*src=[\'"]([^\'"]+)[\'"]', html)
-            avatar_url = ava_m.group(1) if ava_m else ""
-
-            is_photos = len(images) > 0
-            return {
-                "id": str(int(time.time())),
-                "source_url": clean_url,
-                "title": desc,
-                "preview_url": (preview_url or video_url) if not is_photos else "",
-                "video_url": video_url if not is_photos else "",
-                "hd_url": video_url if not is_photos else "",
-                "uhd_4k_url": video_url if not is_photos else "",
-                "sd_url": video_url if not is_photos else "",
-                "wm_url": "",
-                "audio_url": audio_url,
-                "music_title": f"Música de {nickname}",
-                "cover_url": avatar_url or (images[0] if is_photos else ""),
-                "size_mb": "",
-                "hd_size_mb": "",
-                "duration": 0,
-                "width": 1080,
-                "height": 1920,
-                "is_4k": False,
-                "detected_quality": f"CARRUSEL ({len(images)} FOTOS)" if is_photos else "1080p FULL HD",
-                "images": images,
-                "author": {
-                    "nickname": nickname,
-                    "unique_id": nickname.lower().replace(" ", "_"),
-                    "avatar": avatar_url
-                },
-                "engine": "ssstik-proxy"
-            }
+        is_photos = len(images) > 0
+        return {
+            "id": str(int(time.time())),
+            "source_url": clean_url,
+            "title": desc,
+            "preview_url": (preview_url or video_url) if not is_photos else "",
+            "video_url": video_url if not is_photos else "",
+            "hd_url": video_url if not is_photos else "",
+            "uhd_4k_url": video_url if not is_photos else "",
+            "sd_url": video_url if not is_photos else "",
+            "wm_url": "",
+            "audio_url": audio_url,
+            "music_title": f"Música de {nickname}",
+            "cover_url": avatar_url or (images[0] if is_photos else ""),
+            "size_mb": "",
+            "hd_size_mb": "",
+            "duration": 0,
+            "width": 1080,
+            "height": 1920,
+            "is_4k": False,
+            "detected_quality": f"CARRUSEL ({len(images)} FOTOS)" if is_photos else "1080p FULL HD",
+            "images": images,
+            "author": {
+                "nickname": nickname,
+                "unique_id": nickname.lower().replace(" ", "_"),
+                "avatar": avatar_url
+            },
+            "engine": "ssstik-proxy"
+        }
     except Exception as e:
         import traceback
         traceback.print_exc()
@@ -474,6 +525,36 @@ def health():
         "engines": ["yt-dlp", "tikwm", "ssstik"]
     }
 
+async def _run_extraction_pipeline(clean_url: str) -> Optional[Dict[str, Any]]:
+    # Fusión paralela 100% asíncrona con pool HTTP compartido (cero threads bloqueantes)
+    twm_res, sss_res = await asyncio.gather(
+        resolve_with_tikwm(clean_url),
+        resolve_with_ssstik(clean_url),
+        return_exceptions=True
+    )
+    if isinstance(twm_res, Exception):
+        twm_res = None
+    if isinstance(sss_res, Exception):
+        sss_res = None
+
+    if twm_res and sss_res:
+        merged = dict(twm_res)
+        if sss_res.get("images") and len(sss_res["images"]) > len(twm_res.get("images") or []):
+            merged["images"] = sss_res["images"]
+        if sss_res.get("preview_url"):
+            merged["preview_url"] = sss_res["preview_url"]
+        if not merged.get("video_url") and sss_res.get("video_url"):
+            merged["video_url"] = sss_res["video_url"]
+        return merged
+    if twm_res:
+        return twm_res
+    if sss_res:
+        return sss_res
+
+    # Fallback yt-dlp protegido por semáforo anti-OOM (máximo 2 procesos simultáneos en 512 MB RAM)
+    async with ytdlp_semaphore:
+        return await asyncio.to_thread(resolve_with_ytdlp, clean_url)
+
 @app.post("/api/extract")
 async def extract_media(req: ExtractRequest):
     clean_url = clean_tiktok_url(req.url)
@@ -483,66 +564,50 @@ async def extract_media(req: ExtractRequest):
             detail="Enlace inválido. Por favor proporciona una URL válida de tiktok.com"
         )
 
-    # Si es enlace corto (vt.tiktok.com o vm.tiktok.com), intentar resolver hacia la URL canónica del vídeo
+    # Si es enlace corto (vt.tiktok.com o vm.tiktok.com), resolver con el pool HTTP compartido
     if "vt.tiktok.com" in clean_url or "vm.tiktok.com" in clean_url or "/t/" in clean_url:
         try:
-            async with httpx.AsyncClient(follow_redirects=True, timeout=5.0) as client:
-                resp = await client.get(clean_url, headers={"User-Agent": UA_DESKTOP})
-                target = str(resp.url)
-                if "?" in target:
-                    target = target[:target.find("?")]
-                if ("/video/" in target or "/photo/" in target) and target != clean_url:
-                    clean_url = target
+            client = get_async_client()
+            resp = await client.get(clean_url, timeout=5.0)
+            target = str(resp.url)
+            if "?" in target:
+                target = target[:target.find("?")]
+            if ("/video/" in target or "/photo/" in target) and target != clean_url:
+                clean_url = target
         except Exception:
             pass
 
-    # Revisar memoria caché
+    # 1. Revisar memoria caché RAM
     now = time.time()
     cached = cache_store.get(clean_url)
     if cached and (now - cached["timestamp"] < CACHE_EXPIRY_SECONDS):
         return {"success": True, "cached": True, "data": cached["data"]}
 
-    # Fusión paralela sin bloqueo de event-loop (2x más rápida y alta concurrencia)
-    twm_res, sss_res = await asyncio.gather(
-        asyncio.to_thread(resolve_with_tikwm, clean_url),
-        asyncio.to_thread(resolve_with_ssstik, clean_url),
-        return_exceptions=True
-    )
-    if isinstance(twm_res, Exception):
-        twm_res = None
-    if isinstance(sss_res, Exception):
-        sss_res = None
+    # 2. Deduplicación en vuelo: si N personas piden la misma URL al mismo segundo, comparten 1 sola extracción
+    task = in_flight_extractions.get(clean_url)
+    is_owner = False
+    if task is None or task.done():
+        task = asyncio.create_task(_run_extraction_pipeline(clean_url))
+        in_flight_extractions[clean_url] = task
+        is_owner = True
 
-    result = None
-    if twm_res and sss_res:
-        merged = dict(twm_res)
-        if sss_res.get("images") and len(sss_res["images"]) > len(twm_res.get("images") or []):
-            merged["images"] = sss_res["images"]
-        if sss_res.get("preview_url"):
-            merged["preview_url"] = sss_res["preview_url"]
-        if not merged.get("video_url") and sss_res.get("video_url"):
-            merged["video_url"] = sss_res["video_url"]
-        result = merged
-    elif twm_res:
-        result = twm_res
-    elif sss_res:
-        result = sss_res
-    else:
-        result = await asyncio.to_thread(resolve_with_ytdlp, clean_url)
+    try:
+        result = await task
+    finally:
+        if is_owner and in_flight_extractions.get(clean_url) is task:
+            in_flight_extractions.pop(clean_url, None)
 
     if result:
-        # Guardar en caché tanto la URL canónica como el id del video
         cache_store[clean_url] = {"timestamp": now, "data": result}
         vid_id = result.get("id")
         if vid_id and len(vid_id) > 5:
             cache_store[f"id:{vid_id}"] = {"timestamp": now, "data": result}
 
-        # Limitar caché a 1000 elementos
         if len(cache_store) > 1000:
             oldest_key = min(cache_store.keys(), key=lambda k: cache_store[k]["timestamp"])
             cache_store.pop(oldest_key, None)
 
-        return {"success": True, "cached": False, "data": result}
+        return {"success": True, "cached": not is_owner, "data": result}
 
     raise HTTPException(
         status_code=404,
