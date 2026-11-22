@@ -457,11 +457,11 @@ def home():
 @app.get("/api/version")
 def get_version_info():
     return {
-        "versionCode": 4,
-        "versionName": "2.2.0",
+        "versionCode": 5,
+        "versionName": "3.0.0",
         "backendUrl": "https://snaptik-backend.onrender.com/api/extract",
         "apkUrl": "https://raw.githubusercontent.com/juanherrerasandoval70-eng/snaptik-app/main/dist/SnapTik_PRO_v1.0.apk",
-        "changelog": "• Nueva Tarjeta de Descarga flotante Bento con miniatura, barra de progreso y acciones inmediatas\n• Reproducción directa y apertura de archivos descargados con un solo toque\n• Notificaciones del sistema nativas de Android al completar descargas\n• Motor FastMediaDownloader con aceleración de 128 KB",
+        "changelog": "• Rediseño total v3.0 Liquid Glass & Obsidian Titanium\n• Cuadrícula Bento 2×2 de calidades reales y Biblioteca visual en galería\n• Tarjeta de Descarga estilo Dynamic Island con velocidad real (MB/s)\n• Extracción en paralelo 2× más rápida y correcciones de portapapeles Android 12-14",
         "forceUpdate": False
     }
 
@@ -502,9 +502,16 @@ async def extract_media(req: ExtractRequest):
     if cached and (now - cached["timestamp"] < CACHE_EXPIRY_SECONDS):
         return {"success": True, "cached": True, "data": cached["data"]}
 
-    # Fusión inteligente de motores para calidades reales diferenciadas (TikWM + SSSTik + yt-dlp)
-    twm_res = resolve_with_tikwm(clean_url)
-    sss_res = resolve_with_ssstik(clean_url)
+    # Fusión paralela sin bloqueo de event-loop (2x más rápida y alta concurrencia)
+    twm_res, sss_res = await asyncio.gather(
+        asyncio.to_thread(resolve_with_tikwm, clean_url),
+        asyncio.to_thread(resolve_with_ssstik, clean_url),
+        return_exceptions=True
+    )
+    if isinstance(twm_res, Exception):
+        twm_res = None
+    if isinstance(sss_res, Exception):
+        sss_res = None
 
     result = None
     if twm_res and sss_res:
@@ -521,7 +528,7 @@ async def extract_media(req: ExtractRequest):
     elif sss_res:
         result = sss_res
     else:
-        result = resolve_with_ytdlp(clean_url)
+        result = await asyncio.to_thread(resolve_with_ytdlp, clean_url)
 
     if result:
         # Guardar en caché tanto la URL canónica como el id del video
@@ -542,10 +549,27 @@ async def extract_media(req: ExtractRequest):
         detail="No se pudo procesar el vídeo o carrusel. Puede ser privado o haber sido borrado de TikTok."
     )
 
+ALLOWED_PROXY_DOMAINS = (
+    "tiktokcdn.com", "tiktokcdn-us.com", "tiktokcdn-eu.com",
+    "tikcdn.io", "tikwm.com", "muscdn.com", "tiktokv.com",
+    "byteoversea.com", "ibytedtos.com", "ttwstatic.com",
+    "snaptik.app", "ssstik.io", "tiktok.com"
+)
+
+def is_allowed_media_url(target_url: str) -> bool:
+    try:
+        parsed = urllib.parse.urlparse(target_url)
+        if parsed.scheme not in ("http", "https"):
+            return False
+        host = (parsed.hostname or "").lower()
+        return any(host == d or host.endswith("." + d) for d in ALLOWED_PROXY_DOMAINS)
+    except Exception:
+        return False
+
 @app.get("/api/proxy-download")
 async def proxy_download(url: str = Query(...), filename: str = Query("download.mp4")):
-    if not url.startswith("http"):
-        raise HTTPException(status_code=400, detail="URL inválida")
+    if not is_allowed_media_url(url):
+        raise HTTPException(status_code=403, detail="Dominio multimedia no autorizado")
 
     headers = {
         "User-Agent": UA_DESKTOP,
