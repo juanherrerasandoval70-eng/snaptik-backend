@@ -591,11 +591,11 @@ def privacy_policy():
 @app.get("/api/version")
 def get_version_info():
     return {
-        "versionCode": 16,
-        "versionName": "3.8.2",
+        "versionCode": 17,
+        "versionName": "3.8.3",
         "backendUrl": "https://snaptik-backend.onrender.com/api/extract",
         "apkUrl": "https://raw.githubusercontent.com/juanherrerasandoval70-eng/snaptik-app/main/dist/SnapTik_PRO_v1.0.apk",
-        "changelog": "• Miniaturas HD 1080p reales en Biblioteca y Recientes (cero imágenes pixeladas)\n• Icono oficial prisma 3D de cristal y aura ambiental azul cian y naranja coral\n• Selección dinámica real de resolución (4K UHD, 1080p HD, 720p, Audio MP3)",
+        "changelog": "• Reproductor encuadrado al 100% sin desbordamiento lateral en vídeos panorámicos\n• Eliminadas las dimensiones técnicas crudas (1702×720) de las etiquetas\n• Miniaturas HD 1080p reales en Biblioteca y Recientes",
         "forceUpdate": False
     }
 
