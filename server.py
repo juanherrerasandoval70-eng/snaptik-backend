@@ -660,26 +660,123 @@ def privacy_policy():
 <h2>5. Contacto / Contact</h2>
 <p>Para soporte o solicitudes de privacidad, escríbenos a través del repositorio oficial de soporte.</p></body></html>"""
 
+# Panel Online de Notificaciones Push (protegido por contraseña de administrador)
+NOTIF_ADMIN_KEY = os.environ.get("NOTIF_ADMIN_KEY", "Sn@pT1kAdmin#2026").strip()
+NOTIF_STORE_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "active_notification.json")
+
+active_notification_state: Dict[str, Any] = {
+    "active": False,
+    "id": "init_0",
+    "title": "",
+    "body": "",
+    "url": "",
+    "updated_at": 0
+}
+
+def _load_saved_notification():
+    global active_notification_state
+    try:
+        if os.path.exists(NOTIF_STORE_FILE):
+            with open(NOTIF_STORE_FILE, "r", encoding="utf-8") as f:
+                data = json.load(f)
+                if isinstance(data, dict):
+                    active_notification_state.update(data)
+    except Exception:
+        pass
+
+_load_saved_notification()
+
+class PushBroadcastRequest(BaseModel):
+    admin_key: str
+    title: str
+    body: str
+    url: Optional[str] = ""
+    active: bool = True
+
 @app.get("/api/notifications")
 def get_remote_notifications():
-    """Canal remoto de notificaciones push-pull para todos los usuarios de SnapTik PRO.
-    Cambia 'active' a True y actualiza 'id' cuando quieras enviar una notificación global a todos los teléfonos."""
-    return {
-        "active": True,
-        "id": "welcome_v391",
-        "title": "SnapTik PRO actualizado",
-        "body": "Ya puedes descargar vídeos en 4K Ultra HD, 1080p y audio MP3 sin marca de agua a máxima velocidad.",
-        "url": ""
-    }
+    """Devuelve la notificación global activa para todos los teléfonos con SnapTik PRO."""
+    return active_notification_state
+
+@app.post("/api/admin/push")
+def publish_remote_notification(req: PushBroadcastRequest, request: Request):
+    ip = get_client_ip(request)
+    if not hmac.compare_digest(req.admin_key.strip(), NOTIF_ADMIN_KEY):
+        register_strike(ip, 3)
+        raise HTTPException(status_code=403, detail="Clave de administrador incorrecta.")
+
+    new_id = f"push_{int(time.time())}"
+    active_notification_state.update({
+        "active": bool(req.active),
+        "id": new_id,
+        "title": req.title.strip()[:100],
+        "body": req.body.strip()[:300],
+        "url": (req.url or "").strip()[:300],
+        "updated_at": int(time.time())
+    })
+    try:
+        with open(NOTIF_STORE_FILE, "w", encoding="utf-8") as f:
+            json.dump(active_notification_state, f, ensure_ascii=False)
+    except Exception:
+        pass
+    return {"success": True, "notification": active_notification_state}
+
+@app.get("/admin/notificaciones", response_class=HTMLResponse)
+def admin_notifications_panel():
+    return """<!DOCTYPE html><html lang="es"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Panel de Notificaciones — SnapTik PRO</title>
+<style>
+*{box-sizing:border-box;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif}
+body{margin:0;min-height:100vh;background:#050608;color:#fff;display:flex;align-items:center;justify-content:center;padding:20px;
+background-image:radial-gradient(circle at 10% 25%,rgba(36,212,238,.18),transparent 45%),radial-gradient(circle at 90% 75%,rgba(255,108,64,.16),transparent 45%)}
+.card{width:100%;max-width:440px;background:rgba(24,26,32,.86);border:1px solid rgba(255,255,255,.15);border-radius:24px;padding:26px;backdrop-filter:blur(22px);box-shadow:0 24px 60px rgba(0,0,0,.7)}
+h1{margin:0 0 6px;font-size:1.35rem}p{margin:0 0 20px;color:rgba(255,255,255,.6);font-size:.86rem}
+label{display:block;font-size:.78rem;font-weight:700;color:rgba(255,255,255,.8);margin:12px 0 6px}
+input,textarea{width:100%;padding:12px 14px;border-radius:14px;border:1px solid rgba(255,255,255,.14);background:rgba(10,11,15,.85);color:#fff;font-size:.9rem;outline:none}
+input:focus,textarea:focus{border-color:#38EFEE}
+textarea{min-height:88px;resize:vertical}
+button{width:100%;margin-top:18px;padding:14px;border:none;border-radius:999px;background:linear-gradient(180deg,#fff,#E4FAFF);color:#06080B;font-size:.95rem;font-weight:800;cursor:pointer}
+.btn-off{margin-top:10px;background:rgba(255,255,255,.08);color:#fff;border:1px solid rgba(255,255,255,.14);font-weight:600}
+.msg{margin-top:14px;padding:11px 14px;border-radius:12px;font-size:.82rem;display:none}
+.ok{background:rgba(16,185,129,.16);border:1px solid rgba(16,185,129,.4);color:#6EE7B7}
+.err{background:rgba(255,46,99,.16);border:1px solid rgba(255,46,99,.4);color:#FDA4AF}
+</style></head><body><div class="card">
+<h1>Enviar Notificación Online</h1>
+<p>Envía una notificación en vivo a todos los celulares con SnapTik PRO instalada.</p>
+<label>Clave de Administrador</label>
+<input id="key" type="password" placeholder="Ingresa tu clave privada">
+<label>Título de la notificación</label>
+<input id="title" type="text" maxlength="100" placeholder="Ej: ¡Nueva función 4K activada!">
+<label>Mensaje</label>
+<textarea id="body" maxlength="300" placeholder="Escribe el mensaje que verán todos tus usuarios..."></textarea>
+<label>Enlace al tocar la notificación (opcional)</label>
+<input id="url" type="url" placeholder="https://... (déjalo vacío para abrir la app)">
+<button onclick="sendPush(true)">Enviar a Todos Ahora</button>
+<button class="btn-off" onclick="sendPush(false)">Desactivar Notificación Actual</button>
+<div id="msg" class="msg"></div>
+</div><script>
+async function sendPush(active){
+  const m=document.getElementById('msg');m.style.display='none';
+  const payload={admin_key:document.getElementById('key').value,title:document.getElementById('title').value,body:document.getElementById('body').value,url:document.getElementById('url').value,active};
+  if(active && (!payload.title.trim()||!payload.body.trim())){m.className='msg err';m.textContent='Escribe título y mensaje.';m.style.display='block';return;}
+  try{
+    const r=await fetch('/api/admin/push',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});
+    const j=await r.json();
+    if(r.ok){m.className='msg ok';m.textContent=active?('✓ Notificación enviada online (ID: '+j.notification.id+')'):'✓ Notificación desactivada.';}
+    else{m.className='msg err';m.textContent=j.detail||'Error al enviar.';}
+  }catch(e){m.className='msg err';m.textContent='Error de conexión.';}
+  m.style.display='block';
+}
+</script></body></html>"""
 
 @app.get("/api/version")
 def get_version_info():
     return {
-        "versionCode": 20,
-        "versionName": "3.9.1",
+        "versionCode": 21,
+        "versionName": "3.9.2",
         "backendUrl": "https://snaptik-backend.onrender.com/api/extract",
         "apkUrl": "https://raw.githubusercontent.com/juanherrerasandoval70-eng/snaptik-app/main/dist/SnapTik_PRO_v1.0.apk",
-        "changelog": "• Notificaciones nativas conectadas para Android 13/14/15 con solicitud de permiso automática\n• Switch de Notificaciones en Ajustes y canal remoto de avisos desde tu servidor\n• Icono oficial de SnapTik PRO en las notificaciones de descarga",
+        "changelog": "• Recepción automática de notificaciones online incluso con la app cerrada (cada 15 min)\n• Panel web privado para enviar avisos en vivo a todos los usuarios\n• Notificaciones nativas Android 13/14/15 con interruptor en Ajustes",
         "forceUpdate": False
     }
 
