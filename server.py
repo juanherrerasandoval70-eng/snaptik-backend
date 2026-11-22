@@ -660,14 +660,26 @@ def privacy_policy():
 <h2>5. Contacto / Contact</h2>
 <p>Para soporte o solicitudes de privacidad, escríbenos a través del repositorio oficial de soporte.</p></body></html>"""
 
+@app.get("/api/notifications")
+def get_remote_notifications():
+    """Canal remoto de notificaciones push-pull para todos los usuarios de SnapTik PRO.
+    Cambia 'active' a True y actualiza 'id' cuando quieras enviar una notificación global a todos los teléfonos."""
+    return {
+        "active": True,
+        "id": "welcome_v391",
+        "title": "SnapTik PRO actualizado",
+        "body": "Ya puedes descargar vídeos en 4K Ultra HD, 1080p y audio MP3 sin marca de agua a máxima velocidad.",
+        "url": ""
+    }
+
 @app.get("/api/version")
 def get_version_info():
     return {
-        "versionCode": 19,
-        "versionName": "3.9.0",
+        "versionCode": 20,
+        "versionName": "3.9.1",
         "backendUrl": "https://snaptik-backend.onrender.com/api/extract",
         "apkUrl": "https://raw.githubusercontent.com/juanherrerasandoval70-eng/snaptik-app/main/dist/SnapTik_PRO_v1.0.apk",
-        "changelog": "• Blindaje máximo Anti-Crack, Anti-MITM (Proxy.NO_PROXY + networkSecurityConfig) y Anti-Replay con Nonce\n• Protección Anti-Bot y Auto-Ban de 30 min en el servidor\n• Integridad verificada al arranque (anti-repackaging y anti-Frida)",
+        "changelog": "• Notificaciones nativas conectadas para Android 13/14/15 con solicitud de permiso automática\n• Switch de Notificaciones en Ajustes y canal remoto de avisos desde tu servidor\n• Icono oficial de SnapTik PRO en las notificaciones de descarga",
         "forceUpdate": False
     }
 
