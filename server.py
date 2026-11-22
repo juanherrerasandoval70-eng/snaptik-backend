@@ -9,7 +9,7 @@ from typing import Optional, List, Dict, Any
 
 from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse, StreamingResponse
+from fastapi.responses import JSONResponse, PlainTextResponse, StreamingResponse
 from pydantic import BaseModel
 import httpx
 import yt_dlp
@@ -505,14 +505,22 @@ def home():
         "timestamp": int(time.time())
     }
 
+@app.get("/app-ads.txt", response_class=PlainTextResponse)
+def serve_app_ads_txt():
+    ads_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "app-ads.txt")
+    if os.path.exists(ads_path):
+        with open(ads_path, "r", encoding="utf-8") as f:
+            return PlainTextResponse(content=f.read(), media_type="text/plain; charset=utf-8")
+    raise HTTPException(status_code=404, detail="app-ads.txt not found")
+
 @app.get("/api/version")
 def get_version_info():
     return {
-        "versionCode": 7,
-        "versionName": "3.2.0",
+        "versionCode": 8,
+        "versionName": "3.3.0",
         "backendUrl": "https://snaptik-backend.onrender.com/api/extract",
         "apkUrl": "https://raw.githubusercontent.com/juanherrerasandoval70-eng/snaptik-app/main/dist/SnapTik_PRO_v1.0.apk",
-        "changelog": "• Corrección de miniaturas borrosas y tarjetas duplicadas en Biblioteca\n• Etiquetas reales de duración, peso y resolución en cada tarjeta\n• Inicio renovado con nuevos micro-íconos en el selector de calidad\n• Backend asíncrono 5× más rápido y estable",
+        "changelog": "• Integración nativa de Start.io Video Reward para descargas 4K y 1080p Full HD\n• Verificación oficial de app-ads.txt activa en el servidor\n• Mejoras de estabilidad y precarga instantánea de anuncios",
         "forceUpdate": False
     }
 
