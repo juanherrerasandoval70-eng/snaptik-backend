@@ -516,11 +516,11 @@ def serve_app_ads_txt():
 @app.get("/api/version")
 def get_version_info():
     return {
-        "versionCode": 10,
-        "versionName": "3.4.1",
+        "versionCode": 11,
+        "versionName": "3.5.0",
         "backendUrl": "https://snaptik-backend.onrender.com/api/extract",
         "apkUrl": "https://raw.githubusercontent.com/juanherrerasandoval70-eng/snaptik-app/main/dist/SnapTik_PRO_v1.0.apk",
-        "changelog": "• Corrección oficial Start.io: meta-data APPLICATION_ID en Manifest + recurso com_startapp_sdk_aar\n• Banner con dimensiones exactas (320×50) + reintento automático de carga\n• Panel de diagnóstico Start.io en tiempo real y botón Probar en Ajustes",
+        "changelog": "• Start.io SDK 4.11.5 completo verificado con Google Advertising ID (GAID) real + App ID 210251211\n• Banner inferior, Native Ad Liquid Glass, Interstitial, Return Ads y Video Reward listos para monetización real",
         "forceUpdate": False
     }
 
