@@ -508,11 +508,11 @@ def home():
 @app.get("/api/version")
 def get_version_info():
     return {
-        "versionCode": 6,
-        "versionName": "3.1.0",
+        "versionCode": 7,
+        "versionName": "3.2.0",
         "backendUrl": "https://snaptik-backend.onrender.com/api/extract",
         "apkUrl": "https://raw.githubusercontent.com/juanherrerasandoval70-eng/snaptik-app/main/dist/SnapTik_PRO_v1.0.apk",
-        "changelog": "• Nuevo ícono oficial 3D Liquid Glass & Obsidian Titanium\n• Reproductor adaptable sin recortes: muestra el 100% del vídeo (vertical, horizontal o cuadrado)\n• Detección en tiempo real de resolución exacta (px), orientación y duración\n• Fondo ambiental difuminado, botón de pantalla completa y pulido visual premium",
+        "changelog": "• Corrección de miniaturas borrosas y tarjetas duplicadas en Biblioteca\n• Etiquetas reales de duración, peso y resolución en cada tarjeta\n• Inicio renovado con nuevos micro-íconos en el selector de calidad\n• Backend asíncrono 5× más rápido y estable",
         "forceUpdate": False
     }
 
