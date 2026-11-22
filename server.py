@@ -516,11 +516,11 @@ def serve_app_ads_txt():
 @app.get("/api/version")
 def get_version_info():
     return {
-        "versionCode": 8,
-        "versionName": "3.3.0",
+        "versionCode": 9,
+        "versionName": "3.4.0",
         "backendUrl": "https://snaptik-backend.onrender.com/api/extract",
         "apkUrl": "https://raw.githubusercontent.com/juanherrerasandoval70-eng/snaptik-app/main/dist/SnapTik_PRO_v1.0.apk",
-        "changelog": "• Integración nativa de Start.io Video Reward para descargas 4K y 1080p Full HD\n• Verificación oficial de app-ads.txt activa en el servidor\n• Mejoras de estabilidad y precarga instantánea de anuncios",
+        "changelog": "• Suite completa Start.io activa: Banner inferior, Native Ad Liquid Glass, Interstitial, Return Ads y Video Reward\n• Consentimiento SDK y precarga directa sobre Activity para máximo fill rate",
         "forceUpdate": False
     }
 
