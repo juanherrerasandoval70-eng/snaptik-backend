@@ -669,6 +669,7 @@ active_notification_state: Dict[str, Any] = {
     "id": "init_0",
     "title": "",
     "body": "",
+    "image_url": "",
     "url": "",
     "updated_at": 0
 }
@@ -690,6 +691,7 @@ class PushBroadcastRequest(BaseModel):
     admin_key: str
     title: str
     body: str
+    image_url: Optional[str] = ""
     url: Optional[str] = ""
     active: bool = True
 
@@ -711,6 +713,7 @@ def publish_remote_notification(req: PushBroadcastRequest, request: Request):
         "id": new_id,
         "title": req.title.strip()[:100],
         "body": req.body.strip()[:300],
+        "image_url": (req.image_url or "").strip()[:500],
         "url": (req.url or "").strip()[:300],
         "updated_at": int(time.time())
     })
@@ -729,54 +732,73 @@ def admin_notifications_panel():
 *{box-sizing:border-box;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif}
 body{margin:0;min-height:100vh;background:#050608;color:#fff;display:flex;align-items:center;justify-content:center;padding:20px;
 background-image:radial-gradient(circle at 10% 25%,rgba(36,212,238,.18),transparent 45%),radial-gradient(circle at 90% 75%,rgba(255,108,64,.16),transparent 45%)}
-.card{width:100%;max-width:440px;background:rgba(24,26,32,.86);border:1px solid rgba(255,255,255,.15);border-radius:24px;padding:26px;backdrop-filter:blur(22px);box-shadow:0 24px 60px rgba(0,0,0,.7)}
-h1{margin:0 0 6px;font-size:1.35rem}p{margin:0 0 20px;color:rgba(255,255,255,.6);font-size:.86rem}
-label{display:block;font-size:.78rem;font-weight:700;color:rgba(255,255,255,.8);margin:12px 0 6px}
-input,textarea{width:100%;padding:12px 14px;border-radius:14px;border:1px solid rgba(255,255,255,.14);background:rgba(10,11,15,.85);color:#fff;font-size:.9rem;outline:none}
+.card{width:100%;max-width:460px;background:rgba(24,26,32,.88);border:1px solid rgba(255,255,255,.15);border-radius:24px;padding:26px;backdrop-filter:blur(22px);box-shadow:0 24px 60px rgba(0,0,0,.7)}
+h1{margin:0 0 6px;font-size:1.35rem}p{margin:0 0 18px;color:rgba(255,255,255,.6);font-size:.86rem}
+label{display:block;font-size:.78rem;font-weight:700;color:rgba(255,255,255,.82);margin:12px 0 6px}
+input,textarea{width:100%;padding:12px 14px;border-radius:14px;border:1px solid rgba(255,255,255,.14);background:rgba(10,11,15,.88);color:#fff;font-size:.9rem;outline:none}
 input:focus,textarea:focus{border-color:#38EFEE}
-textarea{min-height:88px;resize:vertical}
-button{width:100%;margin-top:18px;padding:14px;border:none;border-radius:999px;background:linear-gradient(180deg,#fff,#E4FAFF);color:#06080B;font-size:.95rem;font-weight:800;cursor:pointer}
+textarea{min-height:78px;resize:vertical}
+.preview-box{margin-top:14px;padding:12px;border-radius:16px;background:rgba(255,255,255,.04);border:1px solid rgba(255,255,255,.1);display:none}
+.preview-box img{width:100%;max-height:160px;object-fit:cover;border-radius:10px;display:block}
+button{width:100%;margin-top:16px;padding:14px;border:none;border-radius:999px;background:linear-gradient(180deg,#fff,#E4FAFF);color:#06080B;font-size:.95rem;font-weight:800;cursor:pointer}
 .btn-off{margin-top:10px;background:rgba(255,255,255,.08);color:#fff;border:1px solid rgba(255,255,255,.14);font-weight:600}
 .msg{margin-top:14px;padding:11px 14px;border-radius:12px;font-size:.82rem;display:none}
 .ok{background:rgba(16,185,129,.16);border:1px solid rgba(16,185,129,.4);color:#6EE7B7}
 .err{background:rgba(255,46,99,.16);border:1px solid rgba(255,46,99,.4);color:#FDA4AF}
+.status-bar{margin-top:14px;padding:10px 12px;border-radius:12px;background:rgba(56,239,238,.08);border:1px solid rgba(56,239,238,.22);font-size:.76rem;color:#BAE6FD}
 </style></head><body><div class="card">
 <h1>Enviar Notificación Online</h1>
-<p>Envía una notificación en vivo a todos los celulares con SnapTik PRO instalada.</p>
+<p>Envía una notificación con imagen o banner en vivo a todos los celulares con SnapTik PRO v3.9.3+.</p>
 <label>Clave de Administrador</label>
 <input id="key" type="password" placeholder="Ingresa tu clave privada">
 <label>Título de la notificación</label>
 <input id="title" type="text" maxlength="100" placeholder="Ej: ¡Nueva función 4K activada!">
 <label>Mensaje</label>
 <textarea id="body" maxlength="300" placeholder="Escribe el mensaje que verán todos tus usuarios..."></textarea>
+<label>URL de Imagen / Banner grande (opcional — JPG o PNG)</label>
+<input id="img" type="url" placeholder="https://...imagen-banner.jpg" oninput="updatePreview()">
+<div id="pbox" class="preview-box"><img id="pimg" alt="Vista previa del banner"></div>
 <label>Enlace al tocar la notificación (opcional)</label>
 <input id="url" type="url" placeholder="https://... (déjalo vacío para abrir la app)">
 <button onclick="sendPush(true)">Enviar a Todos Ahora</button>
 <button class="btn-off" onclick="sendPush(false)">Desactivar Notificación Actual</button>
 <div id="msg" class="msg"></div>
+<div id="cur" class="status-bar">Cargando estado actual...</div>
 </div><script>
+function updatePreview(){
+  const u=document.getElementById('img').value.trim();
+  const b=document.getElementById('pbox'),i=document.getElementById('pimg');
+  if(u.startsWith('http')){i.src=u;b.style.display='block';}else{b.style.display='none';}
+}
+async function loadCurrent(){
+  try{
+    const r=await fetch('/api/notifications');const j=await r.json();
+    document.getElementById('cur').textContent=j.active?('ACTIVA AHORA: "'+j.title+'"'+(j.image_url?' [CON BANNER]':'')):'Sin notificación activa.';
+  }catch(e){}
+}
 async function sendPush(active){
   const m=document.getElementById('msg');m.style.display='none';
-  const payload={admin_key:document.getElementById('key').value,title:document.getElementById('title').value,body:document.getElementById('body').value,url:document.getElementById('url').value,active};
+  const payload={admin_key:document.getElementById('key').value,title:document.getElementById('title').value,body:document.getElementById('body').value,image_url:document.getElementById('img').value,url:document.getElementById('url').value,active};
   if(active && (!payload.title.trim()||!payload.body.trim())){m.className='msg err';m.textContent='Escribe título y mensaje.';m.style.display='block';return;}
   try{
     const r=await fetch('/api/admin/push',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});
     const j=await r.json();
-    if(r.ok){m.className='msg ok';m.textContent=active?('✓ Notificación enviada online (ID: '+j.notification.id+')'):'✓ Notificación desactivada.';}
+    if(r.ok){m.className='msg ok';m.textContent=active?('✓ Publicada en vivo (ID: '+j.notification.id+')'):'✓ Notificación desactivada.';loadCurrent();}
     else{m.className='msg err';m.textContent=j.detail||'Error al enviar.';}
   }catch(e){m.className='msg err';m.textContent='Error de conexión.';}
   m.style.display='block';
 }
+loadCurrent();
 </script></body></html>"""
 
 @app.get("/api/version")
 def get_version_info():
     return {
-        "versionCode": 21,
-        "versionName": "3.9.2",
+        "versionCode": 22,
+        "versionName": "3.9.3",
         "backendUrl": "https://snaptik-backend.onrender.com/api/extract",
         "apkUrl": "https://raw.githubusercontent.com/juanherrerasandoval70-eng/snaptik-app/main/dist/SnapTik_PRO_v1.0.apk",
-        "changelog": "• Recepción automática de notificaciones online incluso con la app cerrada (cada 15 min)\n• Panel web privado para enviar avisos en vivo a todos los usuarios\n• Notificaciones nativas Android 13/14/15 con interruptor en Ajustes",
+        "changelog": "• Notificaciones enriquecidas con imagen/banner grande (BigPictureStyle) y verificación inmediata al volver a la app\n• Panel web online con vista previa del banner en vivo",
         "forceUpdate": False
     }
 
