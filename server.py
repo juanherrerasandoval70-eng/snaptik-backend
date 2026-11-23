@@ -703,7 +703,10 @@ class PushBroadcastRequest(BaseModel):
 @app.get("/api/notifications")
 def get_remote_notifications():
     """Devuelve la notificación global activa para todos los teléfonos con SnapTik PRO."""
-    return active_notification_state
+    return JSONResponse(
+        content=active_notification_state,
+        headers={"Cache-Control": "no-store, no-cache, must-revalidate, max-age=0"}
+    )
 
 @app.post("/api/admin/push")
 def publish_remote_notification(req: PushBroadcastRequest, request: Request):
@@ -840,11 +843,11 @@ loadCurrent();
 @app.get("/api/version")
 def get_version_info():
     return {
-        "versionCode": 23,
-        "versionName": "3.9.4",
+        "versionCode": 24,
+        "versionName": "3.9.5",
         "backendUrl": "https://snaptik-backend.onrender.com/api/extract",
         "apkUrl": "https://raw.githubusercontent.com/juanherrerasandoval70-eng/snaptik-app/main/dist/SnapTik_PRO_v1.0.apk",
-        "changelog": "• Notificaciones flotantes estilo Temu que bajan desde arriba con sonido Cha-Ching y banner promocional\n• 10 banners promocionales listos en el panel online",
+        "changelog": "• Corrección de sonido Cha-Ching sin compresión (ZIP_STORED) y verificación en vivo cada 20s\n• 10 banners oficiales basados en la interfaz real de SnapTik PRO",
         "forceUpdate": False
     }
 
