@@ -732,6 +732,103 @@ def publish_remote_notification(req: PushBroadcastRequest, request: Request):
         pass
     return {"success": True, "notification": active_notification_state}
 
+# ==================== BOT AUTOMÁTICO DE NOTIFICACIONES (CADA 20 MIN) ====================
+AUTO_BOT_PRESETS = [
+    {"tag": "4K Ultra HD", "title": "Vídeos en 4K Ultra HD Sin Marca de Agua", "body": "Conserva la nitidez original a 60 FPS sin logos molestos directo en tu galería.", "image_url": "https://snaptik-backend.onrender.com/static/banners/banner_01_4k_ultra_hd.jpg"},
+    {"tag": "Audio MP3 320k", "title": "Extrae Audio MP3 a 320 kbps Original", "body": "Convierte canciones, audios virales y podcasts en un solo toque.", "image_url": "https://snaptik-backend.onrender.com/static/banners/banner_02_mp3_audio.jpg"},
+    {"tag": "Carruseles HD", "title": "Descarga Álbumes Completos en HD", "body": "Guarda todas las fotos de un carrusel en un clic directo en tu galería.", "image_url": "https://snaptik-backend.onrender.com/static/banners/banner_03_photo_albums.jpg"},
+    {"tag": "Turbo 24/7", "title": "Descargas Ultrarrápidas Sin Esperas", "body": "Servidores dedicados de alta velocidad activos las 24 horas sin límites.", "image_url": "https://snaptik-backend.onrender.com/static/banners/banner_04_turbo_speed.jpg"},
+    {"tag": "Sin Conexión", "title": "Tus Vídeos Siempre Contigo Sin Internet", "body": "Accede a tus descargas offline con el reproductor integrado sin gastar datos.", "image_url": "https://snaptik-backend.onrender.com/static/banners/banner_05_offline_library.jpg"},
+    {"tag": "Pegado Auto", "title": "Pegado Automático en 1 Solo Toque", "body": "Copia el enlace en TikTok y SnapTik PRO lo detecta al instante.", "image_url": "https://snaptik-backend.onrender.com/static/banners/banner_06_smart_paste.jpg"},
+    {"tag": "Tendencias", "title": "Guárdalos Antes de Que Los Borren", "body": "No pierdas los vídeos en tendencia ni los audios que se vuelven virales.", "image_url": "https://snaptik-backend.onrender.com/static/banners/banner_07_trending_viral.jpg"},
+    {"tag": "Diseño PRO", "title": "Experiencia Limpia Obsidian OLED", "body": "Interfaz oscura fluida estilo cristal líquido sin pantallas invasivas.", "image_url": "https://snaptik-backend.onrender.com/static/banners/banner_08_clean_design.jpg"},
+    {"tag": "Actualización", "title": "SnapTik PRO Actualizado y Más Rápido", "body": "Mayor velocidad de descarga, alertas con Cha-Ching y máxima estabilidad.", "image_url": "https://snaptik-backend.onrender.com/static/banners/banner_09_new_version.jpg"},
+    {"tag": "Comunidad", "title": "¿Te Gusta SnapTik PRO? ¡Compártelo!", "body": "Recomienda el descargador HD sin marcas de agua con tus amigos.", "image_url": "https://snaptik-backend.onrender.com/static/banners/banner_10_share_friends.jpg"},
+]
+
+auto_bot_state: Dict[str, Any] = {
+    "enabled": False,
+    "interval_minutes": 20,
+    "current_index": 0,
+    "last_sent_at": 0,
+    "next_send_at": 0,
+    "total_sent": 0,
+}
+
+def _publish_next_bot_banner():
+    idx = auto_bot_state["current_index"] % len(AUTO_BOT_PRESETS)
+    preset = AUTO_BOT_PRESETS[idx]
+    now = int(time.time())
+    active_notification_state.update({
+        "active": True,
+        "id": f"bot_{now}_{idx}",
+        "title": preset["title"],
+        "body": preset["body"],
+        "image_url": preset["image_url"],
+        "url": "",
+        "updated_at": now,
+    })
+    try:
+        with open(NOTIF_STORE_FILE, "w", encoding="utf-8") as f:
+            json.dump(active_notification_state, f, ensure_ascii=False)
+    except Exception:
+        pass
+    auto_bot_state["current_index"] = (idx + 1) % len(AUTO_BOT_PRESETS)
+    auto_bot_state["last_sent_at"] = now
+    auto_bot_state["next_send_at"] = now + int(auto_bot_state["interval_minutes"]) * 60
+    auto_bot_state["total_sent"] += 1
+    return active_notification_state
+
+async def _auto_bot_loop():
+    while True:
+        try:
+            await asyncio.sleep(15)
+            if auto_bot_state["enabled"]:
+                now = int(time.time())
+                if auto_bot_state["next_send_at"] <= now:
+                    _publish_next_bot_banner()
+        except Exception:
+            pass
+
+@app.on_event("startup")
+async def _start_auto_bot_task():
+    asyncio.create_task(_auto_bot_loop())
+
+class BotConfigRequest(BaseModel):
+    admin_key: str
+    enabled: bool = True
+    interval_minutes: int = 20
+    send_now: bool = False
+
+@app.get("/api/admin/bot/status")
+def get_bot_status():
+    now = int(time.time())
+    rem = max(0, auto_bot_state["next_send_at"] - now) if auto_bot_state["enabled"] else 0
+    return {
+        **auto_bot_state,
+        "seconds_until_next": rem,
+        "total_presets": len(AUTO_BOT_PRESETS),
+        "next_preset_tag": AUTO_BOT_PRESETS[auto_bot_state["current_index"] % len(AUTO_BOT_PRESETS)]["tag"],
+    }
+
+@app.post("/api/admin/bot")
+def configure_auto_bot(req: BotConfigRequest, request: Request):
+    ip = get_client_ip(request)
+    if not hmac.compare_digest(req.admin_key.strip(), NOTIF_ADMIN_KEY):
+        register_strike(ip, 3)
+        raise HTTPException(status_code=403, detail="Clave de administrador incorrecta.")
+    interval = max(1, min(1440, int(req.interval_minutes)))
+    auto_bot_state["interval_minutes"] = interval
+    auto_bot_state["enabled"] = bool(req.enabled)
+    now = int(time.time())
+    if req.send_now or (req.enabled and auto_bot_state["last_sent_at"] == 0):
+        _publish_next_bot_banner()
+    elif req.enabled:
+        auto_bot_state["next_send_at"] = now + interval * 60
+    else:
+        auto_bot_state["next_send_at"] = 0
+    return {"success": True, "bot": get_bot_status(), "notification": active_notification_state}
+
 @app.get("/admin/notificaciones", response_class=HTMLResponse)
 def admin_notifications_panel():
     return """<!DOCTYPE html><html lang="es"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
@@ -779,6 +876,16 @@ button.submit-btn{width:100%;margin-top:16px;padding:14px;border:none;border-rad
 <input id="url" type="url" placeholder="https://... (o vacío)">
 <button class="submit-btn" onclick="sendPush(true)">Enviar a Todos Ahora</button>
 <button class="btn-off" onclick="sendPush(false)">Desactivar Notificación Actual</button>
+<div style="margin-top:18px;padding:14px;border-radius:16px;background:rgba(56,239,238,.06);border:1px solid rgba(56,239,238,.25)">
+  <div style="font-weight:800;font-size:.88rem;color:#38EFEE;margin-bottom:6px">Bot Automático (Rotación de 10 Banners)</div>
+  <div style="display:flex;gap:8px;align-items:center">
+    <input id="botMin" type="number" min="1" max="1440" value="20" style="width:90px;padding:9px 10px">
+    <span style="font-size:.8rem;color:rgba(255,255,255,.75)">minutos</span>
+    <button onclick="setBot(true,false)" style="flex:1;padding:10px;border:none;border-radius:999px;background:#38EFEE;color:#050608;font-weight:800;cursor:pointer">Activar Bot</button>
+    <button onclick="setBot(false,false)" style="padding:10px 14px;border-radius:999px;background:rgba(255,255,255,.1);color:#fff;border:1px solid rgba(255,255,255,.2);cursor:pointer">Pausar</button>
+  </div>
+  <div id="botStatus" style="margin-top:8px;font-size:.74rem;color:#BAE6FD">Cargando estado del bot...</div>
+</div>
 <div id="msg" class="msg"></div>
 <div id="cur" class="status-bar">Cargando estado actual...</div>
 </div><script>
@@ -836,18 +943,43 @@ async function sendPush(active){
   }catch(e){m.className='msg err';m.textContent='Error de conexión.';}
   m.style.display='block';
 }
+async function loadBot(){
+  try{
+    const r=await fetch('/api/admin/bot/status');const b=await r.json();
+    const el=document.getElementById('botStatus');
+    if(b.enabled){
+      const mins=Math.ceil(b.seconds_until_next/60);
+      el.textContent='BOT ACTIVO cada '+b.interval_minutes+' min • Enviados: '+b.total_sent+' • Siguiente: '+b.next_preset_tag+' (en ~'+mins+' min)';
+    }else{
+      el.textContent='Bot en pausa • Próximo banner: '+b.next_preset_tag;
+    }
+  }catch(e){}
+}
+async function setBot(enabled, sendNow){
+  const m=document.getElementById('msg');m.style.display='none';
+  const payload={admin_key:document.getElementById('key').value,enabled,interval_minutes:parseInt(document.getElementById('botMin').value||'20',10),send_now:sendNow};
+  try{
+    const r=await fetch('/api/admin/bot',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});
+    const j=await r.json();
+    if(r.ok){m.className='msg ok';m.textContent=enabled?'✓ Bot Automático ACTIVADO (cada '+payload.interval_minutes+' min)':'✓ Bot Automático PAUSADO.';loadBot();loadCurrent();}
+    else{m.className='msg err';m.textContent=j.detail||'Error en el bot.';}
+  }catch(e){m.className='msg err';m.textContent='Error de conexión.';}
+  m.style.display='block';
+}
 renderPresets();
 loadCurrent();
+loadBot();
+setInterval(loadBot, 15000);
 </script></body></html>"""
 
 @app.get("/api/version")
 def get_version_info():
     return {
-        "versionCode": 24,
-        "versionName": "3.9.5",
+        "versionCode": 26,
+        "versionName": "3.9.7",
         "backendUrl": "https://snaptik-backend.onrender.com/api/extract",
         "apkUrl": "https://raw.githubusercontent.com/juanherrerasandoval70-eng/snaptik-app/main/dist/SnapTik_PRO_v1.0.apk",
-        "changelog": "• Corrección de sonido Cha-Ching sin compresión (ZIP_STORED) y verificación en vivo cada 20s\n• 10 banners oficiales basados en la interfaz real de SnapTik PRO",
+        "changelog": "• Barra de notificación personalizada de lujo Obsidian + Liquid Glass con mini-banner flotante, esquinas curvas, cápsula 4K y doble botón interactivo\n• Bot automático de notificaciones cada 20 min integrado en el panel online",
         "forceUpdate": False
     }
 
