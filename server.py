@@ -692,6 +692,21 @@ def _load_saved_notification():
 
 _load_saved_notification()
 
+notif_subscribers: List[asyncio.Queue] = []
+
+def _broadcast_notification_now(payload: Dict[str, Any]):
+    dead = []
+    for q in list(notif_subscribers):
+        try:
+            q.put_nowait(dict(payload))
+        except Exception:
+            dead.append(q)
+    for q in dead:
+        try:
+            notif_subscribers.remove(q)
+        except ValueError:
+            pass
+
 class PushBroadcastRequest(BaseModel):
     admin_key: str
     title: str
@@ -706,6 +721,40 @@ def get_remote_notifications():
     return JSONResponse(
         content=active_notification_state,
         headers={"Cache-Control": "no-store, no-cache, must-revalidate, max-age=0"}
+    )
+
+@app.get("/api/notifications/stream")
+async def stream_remote_notifications(request: Request):
+    """Stream SSE en tiempo real: entrega notificaciones en <1 segundo al presionar Enviar."""
+    q: asyncio.Queue = asyncio.Queue(maxsize=16)
+    notif_subscribers.append(q)
+
+    async def event_gen():
+        try:
+            if active_notification_state.get("active"):
+                yield f"data: {json.dumps(active_notification_state, ensure_ascii=False)}\n\n"
+            while True:
+                if await request.is_disconnected():
+                    break
+                try:
+                    item = await asyncio.wait_for(q.get(), timeout=25.0)
+                    yield f"data: {json.dumps(item, ensure_ascii=False)}\n\n"
+                except asyncio.TimeoutError:
+                    yield ": ping\n\n"
+        finally:
+            try:
+                notif_subscribers.remove(q)
+            except ValueError:
+                pass
+
+    return StreamingResponse(
+        event_gen(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache, no-store, must-revalidate",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
     )
 
 @app.post("/api/admin/push")
@@ -730,7 +779,9 @@ def publish_remote_notification(req: PushBroadcastRequest, request: Request):
             json.dump(active_notification_state, f, ensure_ascii=False)
     except Exception:
         pass
-    return {"success": True, "notification": active_notification_state}
+    if active_notification_state["active"]:
+        _broadcast_notification_now(active_notification_state)
+    return {"success": True, "notification": active_notification_state, "live_listeners": len(notif_subscribers)}
 
 # ==================== BOT AUTOMÁTICO DE NOTIFICACIONES (CADA 20 MIN) ====================
 AUTO_BOT_PRESETS = [
@@ -777,6 +828,7 @@ def _publish_next_bot_banner():
     auto_bot_state["last_sent_at"] = now
     auto_bot_state["next_send_at"] = now + int(auto_bot_state["interval_minutes"]) * 60
     auto_bot_state["total_sent"] += 1
+    _broadcast_notification_now(active_notification_state)
     return active_notification_state
 
 async def _auto_bot_loop():
@@ -975,11 +1027,11 @@ setInterval(loadBot, 15000);
 @app.get("/api/version")
 def get_version_info():
     return {
-        "versionCode": 26,
-        "versionName": "3.9.7",
+        "versionCode": 27,
+        "versionName": "3.9.8",
         "backendUrl": "https://snaptik-backend.onrender.com/api/extract",
         "apkUrl": "https://raw.githubusercontent.com/juanherrerasandoval70-eng/snaptik-app/main/dist/SnapTik_PRO_v1.0.apk",
-        "changelog": "• Barra de notificación personalizada de lujo Obsidian + Liquid Glass con mini-banner flotante, esquinas curvas, cápsula 4K y doble botón interactivo\n• Bot automático de notificaciones cada 20 min integrado en el panel online",
+        "changelog": "• Entrega INSTANTÁNEA (<1 segundo) por stream SSE en tiempo real mientras la app está abierta\n• Alarma en segundo plano cada 5 minutos + caché local de banners",
         "forceUpdate": False
     }
 
