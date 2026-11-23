@@ -13,6 +13,7 @@ from typing import Optional, List, Dict, Any
 from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse, StreamingResponse
+from starlette.staticfiles import StaticFiles
 from pydantic import BaseModel
 import httpx
 import yt_dlp
@@ -24,6 +25,10 @@ app = FastAPI(
     redoc_url=None,
     openapi_url=None,
 )
+
+STATIC_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static")
+os.makedirs(STATIC_DIR, exist_ok=True)
+app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 
 app.add_middleware(
     CORSMiddleware,
@@ -730,41 +735,81 @@ def admin_notifications_panel():
 <title>Panel de Notificaciones — SnapTik PRO</title>
 <style>
 *{box-sizing:border-box;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif}
-body{margin:0;min-height:100vh;background:#050608;color:#fff;display:flex;align-items:center;justify-content:center;padding:20px;
+body{margin:0;min-height:100vh;background:#050608;color:#fff;display:flex;align-items:center;justify-content:center;padding:24px 14px;
 background-image:radial-gradient(circle at 10% 25%,rgba(36,212,238,.18),transparent 45%),radial-gradient(circle at 90% 75%,rgba(255,108,64,.16),transparent 45%)}
-.card{width:100%;max-width:460px;background:rgba(24,26,32,.88);border:1px solid rgba(255,255,255,.15);border-radius:24px;padding:26px;backdrop-filter:blur(22px);box-shadow:0 24px 60px rgba(0,0,0,.7)}
-h1{margin:0 0 6px;font-size:1.35rem}p{margin:0 0 18px;color:rgba(255,255,255,.6);font-size:.86rem}
-label{display:block;font-size:.78rem;font-weight:700;color:rgba(255,255,255,.82);margin:12px 0 6px}
-input,textarea{width:100%;padding:12px 14px;border-radius:14px;border:1px solid rgba(255,255,255,.14);background:rgba(10,11,15,.88);color:#fff;font-size:.9rem;outline:none}
-input:focus,textarea:focus{border-color:#38EFEE}
-textarea{min-height:78px;resize:vertical}
-.preview-box{margin-top:14px;padding:12px;border-radius:16px;background:rgba(255,255,255,.04);border:1px solid rgba(255,255,255,.1);display:none}
-.preview-box img{width:100%;max-height:160px;object-fit:cover;border-radius:10px;display:block}
-button{width:100%;margin-top:16px;padding:14px;border:none;border-radius:999px;background:linear-gradient(180deg,#fff,#E4FAFF);color:#06080B;font-size:.95rem;font-weight:800;cursor:pointer}
-.btn-off{margin-top:10px;background:rgba(255,255,255,.08);color:#fff;border:1px solid rgba(255,255,255,.14);font-weight:600}
+.card{width:100%;max-width:540px;background:rgba(24,28,38,.9);border:1px solid rgba(255,255,255,.15);border-radius:24px;padding:26px;backdrop-filter:blur(22px);box-shadow:0 24px 60px rgba(0,0,0,.7)}
+h1{margin:0 0 6px;font-size:1.35rem;letter-spacing:-.3px}p{margin:0 0 16px;color:rgba(255,255,255,.6);font-size:.85rem;line-height:1.4}
+label{display:block;font-size:.78rem;font-weight:700;color:rgba(255,255,255,.84);margin:14px 0 6px}
+input,textarea,select{width:100%;padding:11px 14px;border-radius:14px;border:1px solid rgba(255,255,255,.14);background:rgba(10,11,15,.88);color:#fff;font-size:.88rem;outline:none}
+input:focus,textarea:focus,select:focus{border-color:#38EFEE}
+textarea{min-height:72px;resize:vertical}
+.preset-grid{display:grid;grid-template-columns:repeat(2,1fr);gap:8px;margin-top:6px;max-height:220px;overflow-y:auto;padding-right:4px}
+.preset-btn{background:rgba(255,255,255,.05);border:1px solid rgba(255,255,255,.12);border-radius:12px;padding:8px 10px;text-align:left;color:#fff;cursor:pointer;display:flex;align-items:center;gap:8px;transition:background .2s}
+.preset-btn:hover{background:rgba(56,239,238,.15);border-color:#38EFEE}
+.preset-btn img{width:40px;height:24px;object-fit:cover;border-radius:5px}
+.preset-info{overflow:hidden}
+.preset-info b{display:block;font-size:.74rem;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;color:#E2E8F0}
+.preset-info span{display:block;font-size:.65rem;color:#38EFEE}
+.preview-box{margin-top:12px;padding:10px;border-radius:16px;background:rgba(255,255,255,.04);border:1px solid rgba(255,255,255,.1);display:none}
+.preview-box img{width:100%;max-height:180px;object-fit:cover;border-radius:10px;display:block}
+button.submit-btn{width:100%;margin-top:16px;padding:14px;border:none;border-radius:999px;background:linear-gradient(180deg,#fff,#E4FAFF);color:#06080B;font-size:.95rem;font-weight:800;cursor:pointer}
+.btn-off{width:100%;margin-top:10px;padding:12px;background:rgba(255,255,255,.08);color:#fff;border:1px solid rgba(255,255,255,.14);border-radius:999px;font-weight:600;cursor:pointer}
 .msg{margin-top:14px;padding:11px 14px;border-radius:12px;font-size:.82rem;display:none}
 .ok{background:rgba(16,185,129,.16);border:1px solid rgba(16,185,129,.4);color:#6EE7B7}
 .err{background:rgba(255,46,99,.16);border:1px solid rgba(255,46,99,.4);color:#FDA4AF}
 .status-bar{margin-top:14px;padding:10px 12px;border-radius:12px;background:rgba(56,239,238,.08);border:1px solid rgba(56,239,238,.22);font-size:.76rem;color:#BAE6FD}
 </style></head><body><div class="card">
-<h1>Enviar Notificación Online</h1>
-<p>Envía una notificación con imagen o banner en vivo a todos los celulares con SnapTik PRO v3.9.3+.</p>
+<h1>Enviar Notificación con Banner</h1>
+<p>Envía un anuncio o banner oficial a todos los celulares con SnapTik PRO.</p>
+<label>Elige una plantilla lista (10 Banners Oficiales)</label>
+<div class="preset-grid" id="presets"></div>
 <label>Clave de Administrador</label>
 <input id="key" type="password" placeholder="Ingresa tu clave privada">
 <label>Título de la notificación</label>
-<input id="title" type="text" maxlength="100" placeholder="Ej: ¡Nueva función 4K activada!">
+<input id="title" type="text" maxlength="100" placeholder="Ej: ¡Vídeos en 4K Ultra HD!">
 <label>Mensaje</label>
-<textarea id="body" maxlength="300" placeholder="Escribe el mensaje que verán todos tus usuarios..."></textarea>
-<label>URL de Imagen / Banner grande (opcional — JPG o PNG)</label>
-<input id="img" type="url" placeholder="https://...imagen-banner.jpg" oninput="updatePreview()">
+<textarea id="body" maxlength="300" placeholder="Escribe el mensaje..."></textarea>
+<label>URL de Imagen / Banner grande (JPG o PNG)</label>
+<input id="img" type="url" placeholder="https://..." oninput="updatePreview()">
 <div id="pbox" class="preview-box"><img id="pimg" alt="Vista previa del banner"></div>
-<label>Enlace al tocar la notificación (opcional)</label>
-<input id="url" type="url" placeholder="https://... (déjalo vacío para abrir la app)">
-<button onclick="sendPush(true)">Enviar a Todos Ahora</button>
+<label>Enlace al tocar (opcional, déjalo vacío para abrir SnapTik PRO)</label>
+<input id="url" type="url" placeholder="https://... (o vacío)">
+<button class="submit-btn" onclick="sendPush(true)">Enviar a Todos Ahora</button>
 <button class="btn-off" onclick="sendPush(false)">Desactivar Notificación Actual</button>
 <div id="msg" class="msg"></div>
 <div id="cur" class="status-bar">Cargando estado actual...</div>
 </div><script>
+const PRESETS = [
+  {id:"01",tag:"4K Ultra HD",title:"⚡ ¡Vídeos en 4K Ultra HD Sin Marca de Agua!",body:"Conserva la nitidez original a 60 FPS sin logos molestos en tus descargas.",img:"https://snaptik-backend.onrender.com/static/banners/banner_01_4k_ultra_hd.jpg"},
+  {id:"02",tag:"Audio MP3 320k",title:"🎵 Extrae Audio MP3 a 320 kbps Original",body:"Convierte canciones, audios virales y podcasts en un solo toque.",img:"https://snaptik-backend.onrender.com/static/banners/banner_02_mp3_audio.jpg"},
+  {id:"03",tag:"Carruseles",title:"📸 Descarga Álbumes Completos en HD",body:"Guarda todas las fotos de un carrusel en un clic directo en tu galería.",img:"https://snaptik-backend.onrender.com/static/banners/banner_03_photo_albums.jpg"},
+  {id:"04",tag:"Turbo 24/7",title:"🚀 Descargas Ultrarrápidas Sin Esperas",body:"Servidores dedicados de alta velocidad activos las 24 horas sin límites.",img:"https://snaptik-backend.onrender.com/static/banners/banner_04_turbo_speed.jpg"},
+  {id:"05",tag:"Sin Conexión",title:"📱 Tus Vídeos Siempre Contigo Sin Internet",body:"Accede a tus descargas offline con el reproductor integrado sin gastar datos.",img:"https://snaptik-backend.onrender.com/static/banners/banner_05_offline_library.jpg"},
+  {id:"06",tag:"Pegado Auto",title:"📋 Pegado Automático en 1 Solo Toque",body:"Copia el enlace en TikTok y SnapTik PRO lo detecta al instante.",img:"https://snaptik-backend.onrender.com/static/banners/banner_06_smart_paste.jpg"},
+  {id:"07",tag:"Tendencias",title:"🔥 ¡Guárdalos Antes de Que Los Borren!",body:"No pierdas los vídeos en tendencia ni los audios que se vuelven virales.",img:"https://snaptik-backend.onrender.com/static/banners/banner_07_trending_viral.jpg"},
+  {id:"08",tag:"Diseño Limpio",title:"✨ Experiencia Limpia Estilo iOS 18 Glass",body:"Interfaz fluida, acabado de cristal esmerilado y modo oscuro OLED.",img:"https://snaptik-backend.onrender.com/static/banners/banner_08_clean_design.jpg"},
+  {id:"09",tag:"Actualización",title:"🎉 ¡Nueva Versión v3.9.3 Disponible!",body:"Mayor velocidad de descarga, compatibilidad mejorada y máxima estabilidad.",img:"https://snaptik-backend.onrender.com/static/banners/banner_09_new_version.jpg"},
+  {id:"10",tag:"Comunidad",title:"❤️ ¿Te Gusta SnapTik PRO? ¡Compártelo!",body:"Recomienda la mejor app de descarga con amigos y creadores de contenido.",img:"https://snaptik-backend.onrender.com/static/banners/banner_10_share_friends.jpg"}
+];
+function renderPresets(){
+  const container = document.getElementById('presets');
+  container.innerHTML = PRESETS.map((p, idx) => `
+    <div class="preset-btn" onclick="applyPreset(${idx})">
+      <img src="${p.img}" alt="${p.tag}">
+      <div class="preset-info">
+        <b>${p.tag}</b>
+        <span>Banner #${p.id}</span>
+      </div>
+    </div>
+  `).join('');
+}
+function applyPreset(idx){
+  const p = PRESETS[idx];
+  document.getElementById('title').value = p.title;
+  document.getElementById('body').value = p.body;
+  document.getElementById('img').value = p.img;
+  updatePreview();
+}
 function updatePreview(){
   const u=document.getElementById('img').value.trim();
   const b=document.getElementById('pbox'),i=document.getElementById('pimg');
@@ -788,6 +833,7 @@ async function sendPush(active){
   }catch(e){m.className='msg err';m.textContent='Error de conexión.';}
   m.style.display='block';
 }
+renderPresets();
 loadCurrent();
 </script></body></html>"""
 
