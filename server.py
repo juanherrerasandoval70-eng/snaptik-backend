@@ -840,11 +840,11 @@ loadCurrent();
 @app.get("/api/version")
 def get_version_info():
     return {
-        "versionCode": 22,
-        "versionName": "3.9.3",
+        "versionCode": 23,
+        "versionName": "3.9.4",
         "backendUrl": "https://snaptik-backend.onrender.com/api/extract",
         "apkUrl": "https://raw.githubusercontent.com/juanherrerasandoval70-eng/snaptik-app/main/dist/SnapTik_PRO_v1.0.apk",
-        "changelog": "• Notificaciones enriquecidas con imagen/banner grande (BigPictureStyle) y verificación inmediata al volver a la app\n• Panel web online con vista previa del banner en vivo",
+        "changelog": "• Notificaciones flotantes estilo Temu que bajan desde arriba con sonido Cha-Ching y banner promocional\n• 10 banners promocionales listos en el panel online",
         "forceUpdate": False
     }
 
